@@ -1,13 +1,6 @@
-import java.util.Properties
-
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
-}
-
-val localProperties = Properties().apply {
-    val file = rootProject.file("local.properties")
-    if (file.exists()) file.inputStream().use(::load)
 }
 
 android {
@@ -26,9 +19,6 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        val animeApiKey = localProperties.getProperty("ANIME_API_KEY", "")
-            .replace("\\", "\\\\").replace("\"", "\\\"")
-        buildConfigField("String", "ANIME_API_KEY", "\"$animeApiKey\"")
     }
 
     buildTypes {
@@ -60,6 +50,7 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
     implementation(libs.coil.compose)
+    implementation("com.google.mlkit:translate:17.0.3")
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

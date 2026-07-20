@@ -11,6 +11,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -33,7 +34,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.aplicacionpersonal.ui.theme.AplicacionPersonalTheme
+import com.google.android.gms.tasks.Tasks
+import com.google.mlkit.common.model.DownloadConditions
+import com.google.mlkit.nl.translate.TranslateLanguage
+import com.google.mlkit.nl.translate.Translation
+import com.google.mlkit.nl.translate.TranslatorOptions
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -49,6 +56,7 @@ data class WishItem(val id: String = UUID.randomUUID().toString(), val name: Str
 data class TaskItem(val id: String = UUID.randomUUID().toString(), val title: String, val details: String, val due: String, val priority: String, val completed: Boolean = false)
 data class FavoriteItem(val id: String = UUID.randomUUID().toString(), val name: String, val category: String, val notes: String, val link: String)
 data class AnimeItem(val apiId: String, val title: String, val image: String, val episodes: Int?, val rating: Double?, val synopsis: String, val watchStatus: String = "Quiero verlo")
+data class RelatedAnime(val role: String, val anime: AnimeItem)
 
 private class PersonalRepository(context: Context) {
     private val wishesPrefs = context.getSharedPreferences("wish_list", Context.MODE_PRIVATE)
@@ -108,7 +116,7 @@ private fun PersonalHub(repository: PersonalRepository) {
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = { AppNavigation(section) { section = it } },
         floatingActionButton = {
-            if (section != Section.ANIME)
+            if (section in setOf(Section.WISHES, Section.TASKS, Section.FAVORITES))
             FloatingActionButton(
                 onClick = { editingWish = null; editingTask = null; editingFavorite = null; formOpen = true },
                 shape = CircleShape,
@@ -192,59 +200,209 @@ private fun FavoritesScreen(items: List<FavoriteItem>, padding: PaddingValues, o
     }
 }
 
+/* Removed experimental video tools.
+@Composable
+private fun VideosScreen(padding: PaddingValues) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var tiktokUrl by rememberSaveable { mutableStateOf("") }
+    var directUrl by rememberSaveable { mutableStateOf("") }
+    var fileName by rememberSaveable { mutableStateOf("mi-video") }
+    var confirmsRights by rememberSaveable { mutableStateOf(false) }
+    var message by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingDownload by remember { mutableStateOf<Pair<String, String>?>(null) }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val pending = pendingDownload
+        if (granted && pending != null) message = enqueueVideoDownload(context, pending.first, pending.second)
+        else if (!granted) message = "Se necesita permiso para guardar el video en Descargas."
+        pendingDownload = null
+    }
+
+    fun startDownload() {
+        val url = directUrl.trim()
+        if (!isHttpUrl(url)) { message = "Ingresa una URL directa válida que comience con http o https."; return }
+        if (!confirmsRights) { message = "Confirma que el video es tuyo o que tienes permiso para descargarlo."; return }
+        val safeName = fileName.trim().ifBlank { "video-${System.currentTimeMillis()}" }
+        message = "Comprobando que el enlace contiene un video…"
+        scope.launch {
+            val check = inspectDirectVideoUrl(url)
+            if (!check.isVideo) {
+                message = check.error ?: "El enlace devuelve una página web, no un archivo de video directo."
+                return@launch
+            }
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                pendingDownload = check.resolvedUrl to safeName
+                permissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            } else message = enqueueVideoDownload(context, check.resolvedUrl, safeName)
+        }
+    }
+
+    LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(20.dp, 24.dp, 20.dp, 112.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        item { ScreenHeader("Herramientas personales", "Videos", "Visualiza TikToks oficialmente y guarda archivos directos autorizados.", 2) }
+        item {
+            Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(2.dp)) {
+                Column(Modifier.padding(20.dp)) {
+                    Surface(Modifier.size(50.dp), shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.primaryContainer) { Box(contentAlignment = Alignment.Center) { Text("♪", fontSize = 25.sp, color = MaterialTheme.colorScheme.primary) } }
+                    Text("Abrir un video de TikTok", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 15.dp))
+                    Text("El enlace se abrirá en TikTok o en el navegador mediante su reproductor oficial.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
+                    OutlinedTextField(tiktokUrl, { tiktokUrl = it; message = null }, Modifier.fillMaxWidth().padding(top = 16.dp), label = { Text("Enlace de TikTok") }, placeholder = { Text("https://www.tiktok.com/@usuario/video/…") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), singleLine = true, shape = RoundedCornerShape(17.dp))
+                    Button({
+                        val url = tiktokUrl.trim()
+                        val uri = runCatching { Uri.parse(url) }.getOrNull()
+                        if (uri != null && isTikTokUrl(uri)) runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, uri)) }.onFailure { message = "No se pudo abrir el enlace." }
+                        else message = "Ese enlace no parece pertenecer a TikTok."
+                    }, Modifier.fillMaxWidth().padding(top = 14.dp).height(52.dp), shape = RoundedCornerShape(16.dp), enabled = tiktokUrl.isNotBlank()) { Text("Abrir oficialmente") }
+                }
+            }
+        }
+        item {
+            Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(2.dp)) {
+                Column(Modifier.padding(20.dp)) {
+                    Surface(Modifier.size(50.dp), shape = RoundedCornerShape(16.dp), color = Color(0xFFE2F4EB)) { Box(contentAlignment = Alignment.Center) { Text("↓", fontSize = 27.sp, color = Color(0xFF287A58)) } }
+                    Text("Descargar un MP4 directo", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 15.dp))
+                    Text("Usa una dirección directa al archivo, no una página de TikTok. Android gestionará la descarga y mostrará su progreso.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
+                    OutlinedTextField(directUrl, { directUrl = it; message = null }, Modifier.fillMaxWidth().padding(top = 16.dp), label = { Text("URL directa del video") }, placeholder = { Text("https://servidor.com/video.mp4") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), singleLine = true, shape = RoundedCornerShape(17.dp))
+                    OutlinedTextField(fileName, { fileName = it }, Modifier.fillMaxWidth().padding(top = 12.dp), label = { Text("Nombre del archivo") }, suffix = { Text(".mp4") }, singleLine = true, shape = RoundedCornerShape(17.dp))
+                    Row(Modifier.fillMaxWidth().clickable { confirmsRights = !confirmsRights }.padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(confirmsRights, { confirmsRights = it })
+                        Text("Confirmo que el video es mío o tengo autorización para descargarlo.", Modifier.padding(start = 5.dp).weight(1f), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Button({ startDownload() }, Modifier.fillMaxWidth().padding(top = 14.dp).height(52.dp), enabled = directUrl.isNotBlank() && confirmsRights, shape = RoundedCornerShape(16.dp)) { Text("Guardar en Descargas") }
+                }
+            }
+        }
+        message?.let { text -> item { Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.secondaryContainer) { Text(text, Modifier.fillMaxWidth().padding(15.dp), color = MaterialTheme.colorScheme.onSecondaryContainer) } } }
+        item { Text("Esta herramienta no extrae variantes privadas ni elimina marcas de agua. Está diseñada para archivos propios o expresamente autorizados.", color = MaterialTheme.colorScheme.outline, fontSize = 12.sp, lineHeight = 17.sp, modifier = Modifier.padding(horizontal = 5.dp)) }
+    }
+}
+
+private fun isHttpUrl(value: String): Boolean = runCatching { Uri.parse(value) }.getOrNull()?.let { it.scheme in listOf("http", "https") && !it.host.isNullOrBlank() } == true
+
+private fun isTikTokUrl(uri: Uri): Boolean {
+    val host = uri.host?.lowercase(Locale.US).orEmpty()
+    return uri.scheme in listOf("http", "https") && (host == "tiktok.com" || host.endsWith(".tiktok.com"))
+}
+
+private data class VideoUrlCheck(val isVideo: Boolean, val resolvedUrl: String, val error: String? = null)
+
+private suspend fun inspectDirectVideoUrl(value: String): VideoUrlCheck = withContext(Dispatchers.IO) {
+    val connection = runCatching { URL(value).openConnection() as HttpURLConnection }.getOrElse { return@withContext VideoUrlCheck(false, value, "La dirección no se pudo abrir.") }
+    try {
+        connection.instanceFollowRedirects = true
+        connection.requestMethod = "GET"
+        connection.setRequestProperty("Range", "bytes=0-1")
+        connection.setRequestProperty("Accept", "video/all,application/octet-stream")
+        connection.setRequestProperty("User-Agent", VIDEO_USER_AGENT)
+        connection.connectTimeout = 12_000
+        connection.readTimeout = 12_000
+        val status = connection.responseCode
+        val contentType = connection.contentType.orEmpty().substringBefore(';').trim().lowercase(Locale.US)
+        val resolved = connection.url.toString()
+        val looksLikeVideo = contentType.startsWith("video/") || (contentType == "application/octet-stream" && Uri.parse(resolved).path.orEmpty().lowercase(Locale.US).endsWith(".mp4"))
+        when {
+            status !in 200..299 -> VideoUrlCheck(false, resolved, "El servidor rechazó el enlace (error $status). Puede haber caducado o requerir una sesión.")
+            contentType.contains("html") || contentType.startsWith("text/") -> VideoUrlCheck(false, resolved, "El enlace conduce a una página web ($contentType), no al archivo MP4.")
+            !looksLikeVideo -> VideoUrlCheck(false, resolved, "El servidor respondió con ${contentType.ifBlank { "un tipo desconocido" }}; no se puede confirmar que sea un video.")
+            else -> VideoUrlCheck(true, resolved)
+        }
+    } catch (error: Exception) {
+        VideoUrlCheck(false, value, "No se pudo verificar el video: ${error.message ?: "conexión fallida"}")
+    } finally { connection.disconnect() }
+}
+
+private const val VIDEO_USER_AGENT = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36"
+
+private fun enqueueVideoDownload(context: Context, url: String, requestedName: String): String = runCatching {
+    val cleanName = requestedName.replace(Regex("[^a-zA-Z0-9._ -]"), "_").trim().removeSuffix(".mp4").ifBlank { "video-${System.currentTimeMillis()}" }
+    val request = DownloadManager.Request(Uri.parse(url))
+        .setTitle("$cleanName.mp4")
+        .setDescription("Descargando video autorizado")
+        .setMimeType("video/mp4")
+        .addRequestHeader("Accept", "video/all,application/octet-stream")
+        .addRequestHeader("User-Agent", VIDEO_USER_AGENT)
+        .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+        .setAllowedOverMetered(true)
+        .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "$cleanName.mp4")
+    val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+    manager.enqueue(request)
+    "Descarga iniciada. Puedes seguir el progreso desde las notificaciones."
+}.getOrElse { "No se pudo iniciar la descarga: ${it.message ?: "URL no compatible"}" }
+*/
+
 private object AnimeApi {
-    private const val ENDPOINT = "https://www.animeapiplatform.com/api/v1/anime"
+    private const val ENDPOINT = "https://kitsu.io/api/edge/anime"
 
     suspend fun search(query: String): List<AnimeItem> = withContext(Dispatchers.IO) {
-        require(BuildConfig.ANIME_API_KEY.isNotBlank() && !BuildConfig.ANIME_API_KEY.startsWith("PEGA_AQUI")) { "Configura ANIME_API_KEY en local.properties" }
         val encoded = URLEncoder.encode(query.trim(), "UTF-8")
-        val connection = (URL("$ENDPOINT?search=$encoded").openConnection() as HttpURLConnection).apply {
+        val connection = (URL("$ENDPOINT?filter%5Btext%5D=$encoded&page%5Blimit%5D=20").openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
-            setRequestProperty("Authorization", "Bearer ${BuildConfig.ANIME_API_KEY}")
-            setRequestProperty("Accept", "application/json")
+            setRequestProperty("Accept", "application/vnd.api+json")
             connectTimeout = 12_000
             readTimeout = 12_000
         }
         try {
             val status = connection.responseCode
             val body = (if (status in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
-            if (status !in 200..299) throw IllegalStateException(when (status) { 401 -> "La clave de la API no es válida"; 429 -> "Alcanzaste el límite de consultas"; else -> "La API respondió con error $status" })
+            if (status !in 200..299) throw IllegalStateException(when (status) { 429 -> "Kitsu limitó temporalmente las consultas"; else -> "Kitsu respondió con error $status" })
             parseAnimeResponse(body)
         } finally { connection.disconnect() }
     }
 
-    private fun parseAnimeResponse(body: String): List<AnimeItem> {
-        val trimmed = body.trim()
-        val array = if (trimmed.startsWith("[")) JSONArray(trimmed) else {
-            val root = JSONObject(trimmed)
-            sequenceOf("data", "results", "anime", "items").mapNotNull { key ->
-                when (val value = root.opt(key)) {
-                    is JSONArray -> value
-                    is JSONObject -> sequenceOf("results", "items", "data").mapNotNull { value.optJSONArray(it) }.firstOrNull()
-                    else -> null
+    suspend fun related(animeId: String): List<RelatedAnime> = withContext(Dispatchers.IO) {
+        val connection = (URL("$ENDPOINT/$animeId/media-relationships?include=destination").openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            setRequestProperty("Accept", "application/vnd.api+json")
+            connectTimeout = 12_000
+            readTimeout = 12_000
+        }
+        try {
+            val status = connection.responseCode
+            if (status !in 200..299) return@withContext emptyList()
+            val root = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+            val relationships = root.optJSONArray("data") ?: JSONArray()
+            val included = root.optJSONArray("included") ?: JSONArray()
+            val rolesById = buildMap {
+                repeat(relationships.length()) { index ->
+                    val relation = relationships.optJSONObject(index) ?: return@repeat
+                    val destination = relation.optJSONObject("relationships")?.optJSONObject("destination")?.optJSONObject("data")
+                    if (destination?.optString("type") == "anime") put(destination.optString("id"), relation.optJSONObject("attributes")?.optString("role").orEmpty())
                 }
-            }.firstOrNull() ?: JSONArray().apply { if (root.has("title") || root.has("name")) put(root) }
-        }
-        return List(array.length()) { index -> array.optJSONObject(index) }.filterNotNull().mapIndexed { index, item ->
-            val titleValue = item.opt("title")
-            val title = when (titleValue) {
-                is JSONObject -> sequenceOf("english", "romaji", "native", "en", "default").map { titleValue.optString(it) }.firstOrNull { it.isNotBlank() }.orEmpty()
-                else -> item.optString("title", item.optString("name", "Anime"))
             }
-            val images = item.optJSONObject("images")
-            val image = sequenceOf(
-                item.optString("image"), item.optString("image_url"), item.optString("poster"), item.optString("cover"),
-                images?.optJSONObject("jpg")?.optString("large_image_url").orEmpty(), images?.optJSONObject("jpg")?.optString("image_url").orEmpty()
-            ).firstOrNull { it.startsWith("http") }.orEmpty()
-            AnimeItem(
-                apiId = sequenceOf("id", "mal_id", "anime_id").map { item.optString(it) }.firstOrNull { it.isNotBlank() } ?: "$title-$index",
-                title = title,
-                image = image,
-                episodes = item.optIntOrNull("episodes"),
-                rating = item.optDoubleOrNull("rating") ?: item.optDoubleOrNull("score"),
-                synopsis = item.optString("synopsis", item.optString("description"))
-            )
-        }
+            List(included.length()) { index -> included.optJSONObject(index) }.filterNotNull()
+                .filter { it.optString("type") == "anime" && rolesById.containsKey(it.optString("id")) }
+                .mapIndexed { index, item -> RelatedAnime(rolesById[item.optString("id")].orEmpty(), parseAnimeItem(item, index)) }
+                .sortedBy { relationshipOrder(it.role) }
+        } finally { connection.disconnect() }
+    }
+
+    private fun parseAnimeResponse(body: String): List<AnimeItem> {
+        val array = JSONObject(body).optJSONArray("data") ?: JSONArray()
+        return List(array.length()) { index -> array.optJSONObject(index) }.filterNotNull().mapIndexed(::parseAnimeItem)
+    }
+
+    private fun parseAnimeItem(index: Int, item: JSONObject): AnimeItem = parseAnimeItem(item, index)
+
+    private fun parseAnimeItem(item: JSONObject, index: Int): AnimeItem {
+        val attributes = item.optJSONObject("attributes") ?: JSONObject()
+        val titles = attributes.optJSONObject("titles")
+        val title = sequenceOf(attributes.optString("canonicalTitle"), titles?.optString("en").orEmpty(), titles?.optString("en_jp").orEmpty(), titles?.optString("ja_jp").orEmpty()).firstOrNull { it.isNotBlank() } ?: "Anime"
+        val poster = attributes.optJSONObject("posterImage")
+        val image = sequenceOf("large", "medium", "small", "original", "tiny").map { poster?.optString(it).orEmpty() }.firstOrNull { it.startsWith("http") }.orEmpty()
+        return AnimeItem(item.optString("id").ifBlank { "$title-$index" }, title, image, attributes.optIntOrNull("episodeCount"), attributes.optString("averageRating").toDoubleOrNull()?.div(10.0), attributes.optString("synopsis", attributes.optString("description")))
+    }
+
+    private fun relationshipOrder(role: String) = when (role) { "prequel" -> 0; "sequel" -> 1; "spinoff" -> 2; "side_story" -> 3; else -> 4 }
+}
+
+private object AnimeTranslator {
+    suspend fun toSpanish(text: String): String = withContext(Dispatchers.IO) {
+        if (text.isBlank()) return@withContext text
+        val options = TranslatorOptions.Builder().setSourceLanguage(TranslateLanguage.ENGLISH).setTargetLanguage(TranslateLanguage.SPANISH).build()
+        val translator = Translation.getClient(options)
+        try {
+            Tasks.await(translator.downloadModelIfNeeded(DownloadConditions.Builder().requireWifi().build()))
+            Tasks.await(translator.translate(text))
+        } finally { translator.close() }
     }
 }
 
@@ -255,17 +413,42 @@ private fun AnimeScreen(items: List<AnimeItem>, padding: PaddingValues, onAdd: (
     var searching by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var filter by rememberSaveable { mutableStateOf("Todos") }
+    var selectedAnime by remember { mutableStateOf<AnimeItem?>(null) }
     val scope = rememberCoroutineScope()
     val library = items.filter { filter == "Todos" || it.watchStatus == filter }
 
-    fun runSearch() {
-        if (query.isBlank() || searching) return
+    selectedAnime?.let { selected ->
+        val saved = items.firstOrNull { it.apiId == selected.apiId }
+        AnimeDetailSheet(
+            anime = saved ?: selected,
+            isSaved = saved != null,
+            onDismiss = { selectedAnime = null },
+            onAdd = { onAdd(selected); selectedAnime = null },
+            onStatus = { status -> onStatus(saved ?: selected, status) },
+            onDelete = { onDelete(saved ?: selected); selectedAnime = null },
+            onSelectRelated = { selectedAnime = it }
+        )
+    }
+
+    fun runSearch(term: String = query) {
+        val requestedQuery = term.trim()
+        if (requestedQuery.length < 2) return
         searching = true; error = null
         scope.launch {
-            runCatching { AnimeApi.search(query) }
-                .onSuccess { results = it; if (it.isEmpty()) error = "No se encontraron animes" }
-                .onFailure { error = it.message ?: "No fue posible conectar con la API" }
-            searching = false
+            runCatching { AnimeApi.search(requestedQuery) }
+                .onSuccess { if (query.trim() == requestedQuery) { results = it; if (it.isEmpty()) error = "No se encontraron animes" } }
+                .onFailure { if (query.trim() == requestedQuery) error = it.message ?: "No fue posible conectar con la API" }
+            if (query.trim() == requestedQuery) searching = false
+        }
+    }
+
+    LaunchedEffect(query) {
+        val requestedQuery = query.trim()
+        if (requestedQuery.length < 2) {
+            results = emptyList(); error = null; searching = false
+        } else {
+            delay(450)
+            runSearch(requestedQuery)
         }
     }
 
@@ -275,7 +458,7 @@ private fun AnimeScreen(items: List<AnimeItem>, padding: PaddingValues, onAdd: (
             Spacer(Modifier.height(22.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedTextField(query, { query = it }, Modifier.weight(1f), placeholder = { Text("Buscar anime") }, leadingIcon = { Text("⌕", fontSize = 23.sp) }, singleLine = true, shape = RoundedCornerShape(20.dp), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text), keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { runSearch() }))
-                Button({ runSearch() }, Modifier.padding(start = 9.dp).height(56.dp), enabled = query.isNotBlank() && !searching, shape = RoundedCornerShape(18.dp), contentPadding = PaddingValues(horizontal = 17.dp)) { if (searching) CircularProgressIndicator(Modifier.size(21.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary) else Text("Buscar") }
+                Button({ runSearch() }, Modifier.padding(start = 9.dp).height(56.dp), enabled = query.trim().length >= 2 && !searching, shape = RoundedCornerShape(18.dp), contentPadding = PaddingValues(horizontal = 17.dp)) { if (searching) CircularProgressIndicator(Modifier.size(21.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary) else Text("Buscar") }
             }
             if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error, fontSize = 13.sp, modifier = Modifier.padding(top = 9.dp))
         }
@@ -283,7 +466,7 @@ private fun AnimeScreen(items: List<AnimeItem>, padding: PaddingValues, onAdd: (
         if (results.isNotEmpty()) {
             item { Text("Resultados", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 10.dp)) }
             items(results.take(12), key = { "result-${it.apiId}" }) { anime ->
-                AnimeResultCard(anime, alreadyAdded = items.any { it.apiId == anime.apiId }) { onAdd(anime); results = results.filterNot { it.apiId == anime.apiId } }
+                AnimeResultCard(anime, alreadyAdded = items.any { it.apiId == anime.apiId }, onDetails = { selectedAnime = anime }) { onAdd(anime); results = results.filterNot { it.apiId == anime.apiId } }
             }
             item { HorizontalDivider(Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outlineVariant) }
         }
@@ -295,7 +478,7 @@ private fun AnimeScreen(items: List<AnimeItem>, padding: PaddingValues, onAdd: (
             }
         }
         if (library.isEmpty()) item { EmptyState("▷", "Tu lista está vacía", "Busca un anime y agrégalo para comenzar tu colección.") }
-        items(library, key = { "saved-${it.apiId}" }) { anime -> AnimeLibraryCard(anime, onStatus, onDelete) }
+        items(library, key = { "saved-${it.apiId}" }) { anime -> AnimeLibraryCard(anime, { selectedAnime = anime }, onStatus, onDelete) }
     }
 }
 
@@ -308,29 +491,121 @@ private fun AnimeArtwork(anime: AnimeItem, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun AnimeResultCard(anime: AnimeItem, alreadyAdded: Boolean, onAdd: () -> Unit) {
-    ElegantCard({}) { Row(verticalAlignment = Alignment.CenterVertically) {
-        AnimeArtwork(anime, Modifier.size(width = 72.dp, height = 98.dp))
-        Column(Modifier.weight(1f).padding(horizontal = 14.dp)) {
+private fun AnimeResultCard(anime: AnimeItem, alreadyAdded: Boolean, onDetails: () -> Unit, onAdd: () -> Unit) {
+    Card(Modifier.fillMaxWidth().clickable(onClick = onDetails), shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(2.dp)) {
+        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+        AnimeArtwork(anime, Modifier.size(width = 88.dp, height = 124.dp))
+        Column(Modifier.weight(1f).padding(start = 16.dp)) {
             Text(anime.title, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Text(listOfNotNull(anime.episodes?.let { "$it episodios" }, anime.rating?.let { "★ ${"%.1f".format(it)}" }).joinToString("  •  ").ifBlank { "Información disponible" }, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, modifier = Modifier.padding(top = 7.dp))
-            Button(onAdd, enabled = !alreadyAdded, shape = RoundedCornerShape(12.dp), contentPadding = PaddingValues(horizontal = 13.dp, vertical = 7.dp), modifier = Modifier.padding(top = 10.dp)) { Text(if (alreadyAdded) "Agregado" else "+ Mi lista", fontSize = 12.sp) }
+            Text("Ver ficha completa  →", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp))
+            Button(onAdd, enabled = !alreadyAdded, shape = RoundedCornerShape(12.dp), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 7.dp), modifier = Modifier.padding(top = 10.dp)) { Text(if (alreadyAdded) "En mi lista" else "+ Mi lista", fontSize = 12.sp) }
         }
     } }
 }
 
 @Composable
-private fun AnimeLibraryCard(anime: AnimeItem, onStatus: (AnimeItem, String) -> Unit, onDelete: (AnimeItem) -> Unit) {
+private fun AnimeLibraryCard(anime: AnimeItem, onDetails: () -> Unit, onStatus: (AnimeItem, String) -> Unit, onDelete: (AnimeItem) -> Unit) {
     var menu by remember { mutableStateOf(false) }
-    ElegantCard({}) { Row(verticalAlignment = Alignment.Top) {
-        AnimeArtwork(anime, Modifier.size(width = 68.dp, height = 94.dp))
-        Column(Modifier.weight(1f).padding(horizontal = 14.dp)) {
+    Card(Modifier.fillMaxWidth().clickable(onClick = onDetails), shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(2.dp)) {
+        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.Top) {
+        AnimeArtwork(anime, Modifier.size(width = 84.dp, height = 116.dp))
+        Column(Modifier.weight(1f).padding(start = 15.dp, end = 6.dp)) {
             Text(anime.title, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            LabelPill(anime.watchStatus)
+            Spacer(Modifier.height(8.dp)); AnimeStatusPill(anime.watchStatus)
+            val facts = listOfNotNull(anime.episodes?.let { "$it eps." }, anime.rating?.let { "★ ${"%.1f".format(it)}" })
+            if (facts.isNotEmpty()) Text(facts.joinToString("   •   "), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(top = 9.dp))
             if (anime.synopsis.isNotBlank()) Text(anime.synopsis, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 9.dp))
         }
         Box { TextButton({ menu = true }, contentPadding = PaddingValues(2.dp), modifier = Modifier.size(34.dp)) { Text("⋮", fontSize = 23.sp) }; DropdownMenu(menu, { menu = false }) { listOf("Quiero verlo", "Viendo", "Ya lo vi").forEach { status -> DropdownMenuItem({ Text(status) }, { menu = false; onStatus(anime, status) }) }; HorizontalDivider(); DropdownMenuItem({ Text("Eliminar", color = MaterialTheme.colorScheme.error) }, { menu = false; onDelete(anime) }) } }
     } }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AnimeDetailSheet(anime: AnimeItem, isSaved: Boolean, onDismiss: () -> Unit, onAdd: () -> Unit, onStatus: (String) -> Unit, onDelete: () -> Unit, onSelectRelated: (AnimeItem) -> Unit) {
+    var translatedSynopsis by remember(anime.apiId) { mutableStateOf<String?>(null) }
+    var translationFailed by remember(anime.apiId) { mutableStateOf(false) }
+    var related by remember(anime.apiId) { mutableStateOf<List<RelatedAnime>>(emptyList()) }
+    var loadingRelated by remember(anime.apiId) { mutableStateOf(true) }
+    LaunchedEffect(anime.apiId) {
+        if (anime.synopsis.isNotBlank()) runCatching { AnimeTranslator.toSpanish(anime.synopsis) }.onSuccess { translatedSynopsis = it }.onFailure { translationFailed = true }
+        related = runCatching { AnimeApi.related(anime.apiId) }.getOrDefault(emptyList())
+        loadingRelated = false
+    }
+    ModalBottomSheet(onDismissRequest = onDismiss, shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp), containerColor = MaterialTheme.colorScheme.surface) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(start = 22.dp, end = 22.dp, bottom = 34.dp)) {
+            Row(verticalAlignment = Alignment.Top) {
+                AnimeArtwork(anime, Modifier.size(width = 126.dp, height = 178.dp))
+                Column(Modifier.weight(1f).padding(start = 18.dp)) {
+                    Text(anime.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
+                    if (isSaved) { Spacer(Modifier.height(12.dp)); AnimeStatusPill(anime.watchStatus) }
+                    anime.rating?.let { Text("★  ${"%.1f".format(it)} / 10", color = Color(0xFFE59A22), fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 14.dp)) }
+                    anime.episodes?.let { Text("$it episodios", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 7.dp)) }
+                }
+            }
+            HorizontalDivider(Modifier.padding(vertical = 22.dp), color = MaterialTheme.colorScheme.outlineVariant)
+            Text("Sinopsis", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            when {
+                anime.synopsis.isBlank() -> Text("Kitsu no ofrece una sinopsis para este título.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 9.dp))
+                translatedSynopsis != null -> {
+                    Text(translatedSynopsis!!, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 21.sp, modifier = Modifier.padding(top = 9.dp))
+                    Text("Traducido por Google", color = MaterialTheme.colorScheme.outline, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
+                }
+                translationFailed -> {
+                    Text(anime.synopsis, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 21.sp, modifier = Modifier.padding(top = 9.dp))
+                    Text("No se pudo descargar el traductor. Conéctate a Wi-Fi para obtenerlo.", color = MaterialTheme.colorScheme.error, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+                }
+                else -> Row(Modifier.padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Text("Traduciendo al español…", Modifier.padding(start = 10.dp), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp) }
+            }
+            Text("Saga y temporadas", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 26.dp, bottom = 12.dp))
+            when {
+                loadingRelated -> Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Text("Buscando títulos relacionados…", Modifier.padding(start = 10.dp), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp) }
+                related.isEmpty() -> Text("No se encontraron temporadas o títulos relacionados.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                else -> Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    related.forEach { relation -> RelatedAnimeCard(relation, { onSelectRelated(relation.anime) }) }
+                }
+            }
+            if (isSaved) {
+                Text("Estado en mi lista", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 24.dp, bottom = 10.dp))
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("Quiero verlo", "Viendo", "Ya lo vi").forEach { status -> FilterChip(anime.watchStatus == status, { onStatus(status) }, { Text(status) }) }
+                }
+                OutlinedButton(onDelete, Modifier.fillMaxWidth().padding(top = 22.dp).height(52.dp), shape = RoundedCornerShape(16.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Eliminar de mi lista") }
+            } else {
+                Button(onAdd, Modifier.fillMaxWidth().padding(top = 24.dp).height(54.dp), shape = RoundedCornerShape(17.dp)) { Text("+  Agregar a mi lista", fontWeight = FontWeight.Bold) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RelatedAnimeCard(relation: RelatedAnime, onClick: () -> Unit) {
+    Card(Modifier.width(142.dp).clickable(onClick = onClick), shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer), elevation = CardDefaults.cardElevation(1.dp)) {
+        Column {
+            AnimeArtwork(relation.anime, Modifier.fillMaxWidth().height(172.dp))
+            Column(Modifier.padding(11.dp)) {
+                Text(relationshipLabel(relation.role), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                Text(relation.anime.title, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp))
+            }
+        }
+    }
+}
+
+private fun relationshipLabel(role: String) = when (role) {
+    "prequel" -> "PRECUELA"
+    "sequel" -> "CONTINUACIÓN"
+    "spinoff" -> "SPIN-OFF"
+    "side_story" -> "HISTORIA PARALELA"
+    "alternative_version" -> "VERSIÓN ALTERNATIVA"
+    "adaptation" -> "ADAPTACIÓN"
+    else -> "RELACIONADO"
+}
+
+@Composable
+private fun AnimeStatusPill(status: String) {
+    val color = when (status) { "Viendo" -> Color(0xFF2878C8); "Ya lo vi" -> Color(0xFF3B8B68); else -> Color(0xFF7357B8) }
+    Surface(shape = RoundedCornerShape(50), color = color.copy(alpha = 0.14f)) { Text(status, Modifier.padding(horizontal = 11.dp, vertical = 6.dp), color = color, fontWeight = FontWeight.Bold, fontSize = 12.sp) }
 }
 
 @Composable private fun FilterRow(selected: Int, options: List<Pair<String, Int>>, onSelect: (Int) -> Unit) { Row(Modifier.padding(top = 18.dp, bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(9.dp)) { options.forEachIndexed { index, option -> FilterChip(selected == index, { onSelect(index) }, { Text("${option.first}  ${option.second}") }, shape = RoundedCornerShape(14.dp)) } } }
