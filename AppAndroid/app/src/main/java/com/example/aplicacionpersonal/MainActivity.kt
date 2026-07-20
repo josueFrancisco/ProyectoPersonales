@@ -10,6 +10,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -19,18 +20,27 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import com.example.aplicacionpersonal.ui.theme.AplicacionPersonalTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
 import java.text.NumberFormat
 import java.util.Locale
 import java.util.UUID
@@ -38,6 +48,7 @@ import java.util.UUID
 data class WishItem(val id: String = UUID.randomUUID().toString(), val name: String, val description: String, val price: Double?, val store: String, val purchased: Boolean = false)
 data class TaskItem(val id: String = UUID.randomUUID().toString(), val title: String, val details: String, val due: String, val priority: String, val completed: Boolean = false)
 data class FavoriteItem(val id: String = UUID.randomUUID().toString(), val name: String, val category: String, val notes: String, val link: String)
+data class AnimeItem(val apiId: String, val title: String, val image: String, val episodes: Int?, val rating: Double?, val synopsis: String, val watchStatus: String = "Quiero verlo")
 
 private class PersonalRepository(context: Context) {
     private val wishesPrefs = context.getSharedPreferences("wish_list", Context.MODE_PRIVATE)
@@ -49,6 +60,8 @@ private class PersonalRepository(context: Context) {
     fun saveTasks(items: List<TaskItem>) = save("tasks", prefs, items) { task -> JSONObject().put("id", task.id).put("title", task.title).put("details", task.details).put("due", task.due).put("priority", task.priority).put("completed", task.completed) }
     fun loadFavorites(): List<FavoriteItem> = parse("favorites", prefs) { item -> FavoriteItem(item.getString("id"), item.getString("name"), item.optString("category"), item.optString("notes"), item.optString("link")) }
     fun saveFavorites(items: List<FavoriteItem>) = save("favorites", prefs, items) { favorite -> JSONObject().put("id", favorite.id).put("name", favorite.name).put("category", favorite.category).put("notes", favorite.notes).put("link", favorite.link) }
+    fun loadAnime(): List<AnimeItem> = parse("anime", prefs) { item -> AnimeItem(item.getString("apiId"), item.getString("title"), item.optString("image"), item.optIntOrNull("episodes"), item.optDoubleOrNull("rating"), item.optString("synopsis"), item.optString("watchStatus", "Quiero verlo")) }
+    fun saveAnime(items: List<AnimeItem>) = save("anime", prefs, items) { anime -> JSONObject().put("apiId", anime.apiId).put("title", anime.title).put("image", anime.image).put("episodes", anime.episodes ?: JSONObject.NULL).put("rating", anime.rating ?: JSONObject.NULL).put("synopsis", anime.synopsis).put("watchStatus", anime.watchStatus) }
 
     private fun <T> parse(key: String, storage: android.content.SharedPreferences, map: (JSONObject) -> T): List<T> = runCatching {
         val array = JSONArray(storage.getString(key, "[]")); List(array.length()) { map(array.getJSONObject(it)) }
@@ -66,7 +79,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Section(val title: String, val short: String) { WISHES("Compras", "◇"), TASKS("Tareas", "✓"), FAVORITES("Favoritos", "♡") }
+private enum class Section(val title: String, val short: String) { WISHES("Compras", "◇"), TASKS("Tareas", "✓"), FAVORITES("Favoritos", "♡"), ANIME("Anime", "▷") }
 
 @Composable
 private fun PersonalHub(repository: PersonalRepository) {
@@ -74,6 +87,7 @@ private fun PersonalHub(repository: PersonalRepository) {
     var wishes by remember { mutableStateOf(repository.loadWishes()) }
     var tasks by remember { mutableStateOf(repository.loadTasks()) }
     var favorites by remember { mutableStateOf(repository.loadFavorites()) }
+    var anime by remember { mutableStateOf(repository.loadAnime()) }
     var editingWish by remember { mutableStateOf<WishItem?>(null) }
     var editingTask by remember { mutableStateOf<TaskItem?>(null) }
     var editingFavorite by remember { mutableStateOf<FavoriteItem?>(null) }
@@ -85,6 +99,7 @@ private fun PersonalHub(repository: PersonalRepository) {
             Section.WISHES -> WishForm(editingWish, { formOpen = false }) { value -> wishes = if (editingWish == null) wishes + value else wishes.map { if (it.id == value.id) value else it }; repository.saveWishes(wishes); formOpen = false }
             Section.TASKS -> TaskForm(editingTask, { formOpen = false }) { value -> tasks = if (editingTask == null) tasks + value else tasks.map { if (it.id == value.id) value else it }; repository.saveTasks(tasks); formOpen = false }
             Section.FAVORITES -> FavoriteForm(editingFavorite, { formOpen = false }) { value -> favorites = if (editingFavorite == null) favorites + value else favorites.map { if (it.id == value.id) value else it }; repository.saveFavorites(favorites); formOpen = false }
+            Section.ANIME -> Unit
         }
         return
     }
@@ -93,6 +108,7 @@ private fun PersonalHub(repository: PersonalRepository) {
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = { AppNavigation(section) { section = it } },
         floatingActionButton = {
+            if (section != Section.ANIME)
             FloatingActionButton(
                 onClick = { editingWish = null; editingTask = null; editingFavorite = null; formOpen = true },
                 shape = CircleShape,
@@ -105,6 +121,7 @@ private fun PersonalHub(repository: PersonalRepository) {
                 Section.WISHES -> WishesScreen(wishes, padding, onToggle = { target -> wishes = wishes.map { if (it.id == target.id) it.copy(purchased = !it.purchased) else it }; repository.saveWishes(wishes) }, onEdit = { editingWish = it; formOpen = true }, onDelete = { target -> wishes = wishes.filterNot { it.id == target.id }; repository.saveWishes(wishes) })
                 Section.TASKS -> TasksScreen(tasks, padding, onToggle = { target -> tasks = tasks.map { if (it.id == target.id) it.copy(completed = !it.completed) else it }; repository.saveTasks(tasks) }, onEdit = { editingTask = it; formOpen = true }, onDelete = { target -> tasks = tasks.filterNot { it.id == target.id }; repository.saveTasks(tasks) })
                 Section.FAVORITES -> FavoritesScreen(favorites, padding, onEdit = { editingFavorite = it; formOpen = true }, onDelete = { target -> favorites = favorites.filterNot { it.id == target.id }; repository.saveFavorites(favorites) })
+                Section.ANIME -> AnimeScreen(anime, padding, onAdd = { result -> if (anime.none { it.apiId == result.apiId }) { anime = anime + result; repository.saveAnime(anime) } }, onStatus = { target, status -> anime = anime.map { if (it.apiId == target.apiId) it.copy(watchStatus = status) else it }; repository.saveAnime(anime) }, onDelete = { target -> anime = anime.filterNot { it.apiId == target.apiId }; repository.saveAnime(anime) })
             }
         }
     }
@@ -175,6 +192,147 @@ private fun FavoritesScreen(items: List<FavoriteItem>, padding: PaddingValues, o
     }
 }
 
+private object AnimeApi {
+    private const val ENDPOINT = "https://www.animeapiplatform.com/api/v1/anime"
+
+    suspend fun search(query: String): List<AnimeItem> = withContext(Dispatchers.IO) {
+        require(BuildConfig.ANIME_API_KEY.isNotBlank() && !BuildConfig.ANIME_API_KEY.startsWith("PEGA_AQUI")) { "Configura ANIME_API_KEY en local.properties" }
+        val encoded = URLEncoder.encode(query.trim(), "UTF-8")
+        val connection = (URL("$ENDPOINT?search=$encoded").openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            setRequestProperty("Authorization", "Bearer ${BuildConfig.ANIME_API_KEY}")
+            setRequestProperty("Accept", "application/json")
+            connectTimeout = 12_000
+            readTimeout = 12_000
+        }
+        try {
+            val status = connection.responseCode
+            val body = (if (status in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
+            if (status !in 200..299) throw IllegalStateException(when (status) { 401 -> "La clave de la API no es válida"; 429 -> "Alcanzaste el límite de consultas"; else -> "La API respondió con error $status" })
+            parseAnimeResponse(body)
+        } finally { connection.disconnect() }
+    }
+
+    private fun parseAnimeResponse(body: String): List<AnimeItem> {
+        val trimmed = body.trim()
+        val array = if (trimmed.startsWith("[")) JSONArray(trimmed) else {
+            val root = JSONObject(trimmed)
+            sequenceOf("data", "results", "anime", "items").mapNotNull { key ->
+                when (val value = root.opt(key)) {
+                    is JSONArray -> value
+                    is JSONObject -> sequenceOf("results", "items", "data").mapNotNull { value.optJSONArray(it) }.firstOrNull()
+                    else -> null
+                }
+            }.firstOrNull() ?: JSONArray().apply { if (root.has("title") || root.has("name")) put(root) }
+        }
+        return List(array.length()) { index -> array.optJSONObject(index) }.filterNotNull().mapIndexed { index, item ->
+            val titleValue = item.opt("title")
+            val title = when (titleValue) {
+                is JSONObject -> sequenceOf("english", "romaji", "native", "en", "default").map { titleValue.optString(it) }.firstOrNull { it.isNotBlank() }.orEmpty()
+                else -> item.optString("title", item.optString("name", "Anime"))
+            }
+            val images = item.optJSONObject("images")
+            val image = sequenceOf(
+                item.optString("image"), item.optString("image_url"), item.optString("poster"), item.optString("cover"),
+                images?.optJSONObject("jpg")?.optString("large_image_url").orEmpty(), images?.optJSONObject("jpg")?.optString("image_url").orEmpty()
+            ).firstOrNull { it.startsWith("http") }.orEmpty()
+            AnimeItem(
+                apiId = sequenceOf("id", "mal_id", "anime_id").map { item.optString(it) }.firstOrNull { it.isNotBlank() } ?: "$title-$index",
+                title = title,
+                image = image,
+                episodes = item.optIntOrNull("episodes"),
+                rating = item.optDoubleOrNull("rating") ?: item.optDoubleOrNull("score"),
+                synopsis = item.optString("synopsis", item.optString("description"))
+            )
+        }
+    }
+}
+
+@Composable
+private fun AnimeScreen(items: List<AnimeItem>, padding: PaddingValues, onAdd: (AnimeItem) -> Unit, onStatus: (AnimeItem, String) -> Unit, onDelete: (AnimeItem) -> Unit) {
+    var query by rememberSaveable { mutableStateOf("") }
+    var results by remember { mutableStateOf<List<AnimeItem>>(emptyList()) }
+    var searching by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var filter by rememberSaveable { mutableStateOf("Todos") }
+    val scope = rememberCoroutineScope()
+    val library = items.filter { filter == "Todos" || it.watchStatus == filter }
+
+    fun runSearch() {
+        if (query.isBlank() || searching) return
+        searching = true; error = null
+        scope.launch {
+            runCatching { AnimeApi.search(query) }
+                .onSuccess { results = it; if (it.isEmpty()) error = "No se encontraron animes" }
+                .onFailure { error = it.message ?: "No fue posible conectar con la API" }
+            searching = false
+        }
+    }
+
+    LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(20.dp, 24.dp, 20.dp, 112.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item {
+            ScreenHeader("Tu mundo anime", "Lista de anime", "Descubre títulos y lleva el control de lo que ves.", items.size)
+            Spacer(Modifier.height(22.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(query, { query = it }, Modifier.weight(1f), placeholder = { Text("Buscar anime") }, leadingIcon = { Text("⌕", fontSize = 23.sp) }, singleLine = true, shape = RoundedCornerShape(20.dp), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text), keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { runSearch() }))
+                Button({ runSearch() }, Modifier.padding(start = 9.dp).height(56.dp), enabled = query.isNotBlank() && !searching, shape = RoundedCornerShape(18.dp), contentPadding = PaddingValues(horizontal = 17.dp)) { if (searching) CircularProgressIndicator(Modifier.size(21.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary) else Text("Buscar") }
+            }
+            if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error, fontSize = 13.sp, modifier = Modifier.padding(top = 9.dp))
+        }
+
+        if (results.isNotEmpty()) {
+            item { Text("Resultados", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 10.dp)) }
+            items(results.take(12), key = { "result-${it.apiId}" }) { anime ->
+                AnimeResultCard(anime, alreadyAdded = items.any { it.apiId == anime.apiId }) { onAdd(anime); results = results.filterNot { it.apiId == anime.apiId } }
+            }
+            item { HorizontalDivider(Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outlineVariant) }
+        }
+
+        item {
+            Text("Mi lista", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp))
+            Row(Modifier.fillMaxWidth().padding(top = 12.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                listOf("Todos", "Quiero verlo", "Viendo", "Ya lo vi").forEach { value -> FilterChip(filter == value, { filter = value }, { Text(value, fontSize = 12.sp) }, shape = RoundedCornerShape(13.dp)) }
+            }
+        }
+        if (library.isEmpty()) item { EmptyState("▷", "Tu lista está vacía", "Busca un anime y agrégalo para comenzar tu colección.") }
+        items(library, key = { "saved-${it.apiId}" }) { anime -> AnimeLibraryCard(anime, onStatus, onDelete) }
+    }
+}
+
+@Composable
+private fun AnimeArtwork(anime: AnimeItem, modifier: Modifier = Modifier) {
+    Surface(modifier, shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.primaryContainer) {
+        if (anime.image.isNotBlank()) AsyncImage(model = anime.image, contentDescription = "Portada de ${anime.title}", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        else Box(contentAlignment = Alignment.Center) { Text("▷", fontSize = 30.sp, color = MaterialTheme.colorScheme.primary) }
+    }
+}
+
+@Composable
+private fun AnimeResultCard(anime: AnimeItem, alreadyAdded: Boolean, onAdd: () -> Unit) {
+    ElegantCard({}) { Row(verticalAlignment = Alignment.CenterVertically) {
+        AnimeArtwork(anime, Modifier.size(width = 72.dp, height = 98.dp))
+        Column(Modifier.weight(1f).padding(horizontal = 14.dp)) {
+            Text(anime.title, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(listOfNotNull(anime.episodes?.let { "$it episodios" }, anime.rating?.let { "★ ${"%.1f".format(it)}" }).joinToString("  •  ").ifBlank { "Información disponible" }, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, modifier = Modifier.padding(top = 7.dp))
+            Button(onAdd, enabled = !alreadyAdded, shape = RoundedCornerShape(12.dp), contentPadding = PaddingValues(horizontal = 13.dp, vertical = 7.dp), modifier = Modifier.padding(top = 10.dp)) { Text(if (alreadyAdded) "Agregado" else "+ Mi lista", fontSize = 12.sp) }
+        }
+    } }
+}
+
+@Composable
+private fun AnimeLibraryCard(anime: AnimeItem, onStatus: (AnimeItem, String) -> Unit, onDelete: (AnimeItem) -> Unit) {
+    var menu by remember { mutableStateOf(false) }
+    ElegantCard({}) { Row(verticalAlignment = Alignment.Top) {
+        AnimeArtwork(anime, Modifier.size(width = 68.dp, height = 94.dp))
+        Column(Modifier.weight(1f).padding(horizontal = 14.dp)) {
+            Text(anime.title, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            LabelPill(anime.watchStatus)
+            if (anime.synopsis.isNotBlank()) Text(anime.synopsis, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 9.dp))
+        }
+        Box { TextButton({ menu = true }, contentPadding = PaddingValues(2.dp), modifier = Modifier.size(34.dp)) { Text("⋮", fontSize = 23.sp) }; DropdownMenu(menu, { menu = false }) { listOf("Quiero verlo", "Viendo", "Ya lo vi").forEach { status -> DropdownMenuItem({ Text(status) }, { menu = false; onStatus(anime, status) }) }; HorizontalDivider(); DropdownMenuItem({ Text("Eliminar", color = MaterialTheme.colorScheme.error) }, { menu = false; onDelete(anime) }) } }
+    } }
+}
+
 @Composable private fun FilterRow(selected: Int, options: List<Pair<String, Int>>, onSelect: (Int) -> Unit) { Row(Modifier.padding(top = 18.dp, bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(9.dp)) { options.forEachIndexed { index, option -> FilterChip(selected == index, { onSelect(index) }, { Text("${option.first}  ${option.second}") }, shape = RoundedCornerShape(14.dp)) } } }
 @Composable private fun ElegantCard(onClick: () -> Unit, content: @Composable () -> Unit) { Card(Modifier.fillMaxWidth().clickable(onClick = onClick), shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)) { Box(Modifier.padding(18.dp)) { content() } } }
 @Composable private fun CheckControl(checked: Boolean, onClick: () -> Unit) { Surface(Modifier.size(28.dp).clickable(onClick = onClick), shape = CircleShape, color = if (checked) MaterialTheme.colorScheme.primary else Color.Transparent, border = if (checked) null else androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.outline)) { if (checked) Box(contentAlignment = Alignment.Center) { Text("✓", color = MaterialTheme.colorScheme.onPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold) } } }
@@ -212,3 +370,5 @@ private fun FavoriteForm(existing: FavoriteItem?, onBack: () -> Unit, onSave: (F
 private fun formatPrice(price: Double?) = price?.let { NumberFormat.getCurrencyInstance(Locale.US).format(it) } ?: "Sin precio"
 private fun priorityOrder(priority: String) = when (priority) { "Alta" -> 0; "Media" -> 1; else -> 2 }
 private fun categorySymbol(category: String) = when { category.contains("música", true) || category.contains("musica", true) -> "♪"; category.contains("película", true) || category.contains("serie", true) -> "▶"; category.contains("lugar", true) || category.contains("viaje", true) -> "⌖"; category.contains("libro", true) -> "▤"; else -> "♡" }
+private fun JSONObject.optIntOrNull(key: String): Int? = if (!has(key) || isNull(key)) null else optInt(key).takeIf { it > 0 }
+private fun JSONObject.optDoubleOrNull(key: String): Double? = if (!has(key) || isNull(key)) null else optDouble(key).takeIf { !it.isNaN() }
