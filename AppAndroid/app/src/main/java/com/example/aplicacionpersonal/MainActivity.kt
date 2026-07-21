@@ -14,7 +14,12 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -55,7 +60,7 @@ import java.util.UUID
 data class WishItem(val id: String = UUID.randomUUID().toString(), val name: String, val description: String, val price: Double?, val store: String, val purchased: Boolean = false)
 data class TaskItem(val id: String = UUID.randomUUID().toString(), val title: String, val details: String, val due: String, val priority: String, val completed: Boolean = false)
 data class FavoriteItem(val id: String = UUID.randomUUID().toString(), val name: String, val category: String, val notes: String, val link: String)
-data class AnimeItem(val apiId: String, val title: String, val image: String, val episodes: Int?, val rating: Double?, val synopsis: String, val watchStatus: String = "Quiero verlo")
+data class AnimeItem(val apiId: String, val title: String, val image: String, val episodes: Int?, val rating: Double?, val synopsis: String, val watchStatus: String = "Quiero verlo", val genres: List<String> = emptyList())
 data class RelatedAnime(val role: String, val anime: AnimeItem)
 
 private class PersonalRepository(context: Context) {
@@ -68,8 +73,8 @@ private class PersonalRepository(context: Context) {
     fun saveTasks(items: List<TaskItem>) = save("tasks", prefs, items) { task -> JSONObject().put("id", task.id).put("title", task.title).put("details", task.details).put("due", task.due).put("priority", task.priority).put("completed", task.completed) }
     fun loadFavorites(): List<FavoriteItem> = parse("favorites", prefs) { item -> FavoriteItem(item.getString("id"), item.getString("name"), item.optString("category"), item.optString("notes"), item.optString("link")) }
     fun saveFavorites(items: List<FavoriteItem>) = save("favorites", prefs, items) { favorite -> JSONObject().put("id", favorite.id).put("name", favorite.name).put("category", favorite.category).put("notes", favorite.notes).put("link", favorite.link) }
-    fun loadAnime(): List<AnimeItem> = parse("anime", prefs) { item -> AnimeItem(item.getString("apiId"), item.getString("title"), item.optString("image"), item.optIntOrNull("episodes"), item.optDoubleOrNull("rating"), item.optString("synopsis"), item.optString("watchStatus", "Quiero verlo")) }
-    fun saveAnime(items: List<AnimeItem>) = save("anime", prefs, items) { anime -> JSONObject().put("apiId", anime.apiId).put("title", anime.title).put("image", anime.image).put("episodes", anime.episodes ?: JSONObject.NULL).put("rating", anime.rating ?: JSONObject.NULL).put("synopsis", anime.synopsis).put("watchStatus", anime.watchStatus) }
+    fun loadAnime(): List<AnimeItem> = parse("anime", prefs) { item -> AnimeItem(item.getString("apiId"), item.getString("title"), item.optString("image"), item.optIntOrNull("episodes"), item.optDoubleOrNull("rating"), item.optString("synopsis"), item.optString("watchStatus", "Quiero verlo"), item.optStringList("genres")) }
+    fun saveAnime(items: List<AnimeItem>) = save("anime", prefs, items) { anime -> JSONObject().put("apiId", anime.apiId).put("title", anime.title).put("image", anime.image).put("episodes", anime.episodes ?: JSONObject.NULL).put("rating", anime.rating ?: JSONObject.NULL).put("synopsis", anime.synopsis).put("watchStatus", anime.watchStatus).put("genres", JSONArray(anime.genres)) }
 
     private fun <T> parse(key: String, storage: android.content.SharedPreferences, map: (JSONObject) -> T): List<T> = runCatching {
         val array = JSONArray(storage.getString(key, "[]")); List(array.length()) { map(array.getJSONObject(it)) }
@@ -200,141 +205,12 @@ private fun FavoritesScreen(items: List<FavoriteItem>, padding: PaddingValues, o
     }
 }
 
-/* Removed experimental video tools.
-@Composable
-private fun VideosScreen(padding: PaddingValues) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var tiktokUrl by rememberSaveable { mutableStateOf("") }
-    var directUrl by rememberSaveable { mutableStateOf("") }
-    var fileName by rememberSaveable { mutableStateOf("mi-video") }
-    var confirmsRights by rememberSaveable { mutableStateOf(false) }
-    var message by rememberSaveable { mutableStateOf<String?>(null) }
-    var pendingDownload by remember { mutableStateOf<Pair<String, String>?>(null) }
-    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        val pending = pendingDownload
-        if (granted && pending != null) message = enqueueVideoDownload(context, pending.first, pending.second)
-        else if (!granted) message = "Se necesita permiso para guardar el video en Descargas."
-        pendingDownload = null
-    }
-
-    fun startDownload() {
-        val url = directUrl.trim()
-        if (!isHttpUrl(url)) { message = "Ingresa una URL directa válida que comience con http o https."; return }
-        if (!confirmsRights) { message = "Confirma que el video es tuyo o que tienes permiso para descargarlo."; return }
-        val safeName = fileName.trim().ifBlank { "video-${System.currentTimeMillis()}" }
-        message = "Comprobando que el enlace contiene un video…"
-        scope.launch {
-            val check = inspectDirectVideoUrl(url)
-            if (!check.isVideo) {
-                message = check.error ?: "El enlace devuelve una página web, no un archivo de video directo."
-                return@launch
-            }
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-                pendingDownload = check.resolvedUrl to safeName
-                permissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-            } else message = enqueueVideoDownload(context, check.resolvedUrl, safeName)
-        }
-    }
-
-    LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(20.dp, 24.dp, 20.dp, 112.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
-        item { ScreenHeader("Herramientas personales", "Videos", "Visualiza TikToks oficialmente y guarda archivos directos autorizados.", 2) }
-        item {
-            Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(2.dp)) {
-                Column(Modifier.padding(20.dp)) {
-                    Surface(Modifier.size(50.dp), shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.primaryContainer) { Box(contentAlignment = Alignment.Center) { Text("♪", fontSize = 25.sp, color = MaterialTheme.colorScheme.primary) } }
-                    Text("Abrir un video de TikTok", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 15.dp))
-                    Text("El enlace se abrirá en TikTok o en el navegador mediante su reproductor oficial.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
-                    OutlinedTextField(tiktokUrl, { tiktokUrl = it; message = null }, Modifier.fillMaxWidth().padding(top = 16.dp), label = { Text("Enlace de TikTok") }, placeholder = { Text("https://www.tiktok.com/@usuario/video/…") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), singleLine = true, shape = RoundedCornerShape(17.dp))
-                    Button({
-                        val url = tiktokUrl.trim()
-                        val uri = runCatching { Uri.parse(url) }.getOrNull()
-                        if (uri != null && isTikTokUrl(uri)) runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, uri)) }.onFailure { message = "No se pudo abrir el enlace." }
-                        else message = "Ese enlace no parece pertenecer a TikTok."
-                    }, Modifier.fillMaxWidth().padding(top = 14.dp).height(52.dp), shape = RoundedCornerShape(16.dp), enabled = tiktokUrl.isNotBlank()) { Text("Abrir oficialmente") }
-                }
-            }
-        }
-        item {
-            Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(2.dp)) {
-                Column(Modifier.padding(20.dp)) {
-                    Surface(Modifier.size(50.dp), shape = RoundedCornerShape(16.dp), color = Color(0xFFE2F4EB)) { Box(contentAlignment = Alignment.Center) { Text("↓", fontSize = 27.sp, color = Color(0xFF287A58)) } }
-                    Text("Descargar un MP4 directo", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 15.dp))
-                    Text("Usa una dirección directa al archivo, no una página de TikTok. Android gestionará la descarga y mostrará su progreso.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
-                    OutlinedTextField(directUrl, { directUrl = it; message = null }, Modifier.fillMaxWidth().padding(top = 16.dp), label = { Text("URL directa del video") }, placeholder = { Text("https://servidor.com/video.mp4") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), singleLine = true, shape = RoundedCornerShape(17.dp))
-                    OutlinedTextField(fileName, { fileName = it }, Modifier.fillMaxWidth().padding(top = 12.dp), label = { Text("Nombre del archivo") }, suffix = { Text(".mp4") }, singleLine = true, shape = RoundedCornerShape(17.dp))
-                    Row(Modifier.fillMaxWidth().clickable { confirmsRights = !confirmsRights }.padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(confirmsRights, { confirmsRights = it })
-                        Text("Confirmo que el video es mío o tengo autorización para descargarlo.", Modifier.padding(start = 5.dp).weight(1f), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Button({ startDownload() }, Modifier.fillMaxWidth().padding(top = 14.dp).height(52.dp), enabled = directUrl.isNotBlank() && confirmsRights, shape = RoundedCornerShape(16.dp)) { Text("Guardar en Descargas") }
-                }
-            }
-        }
-        message?.let { text -> item { Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.secondaryContainer) { Text(text, Modifier.fillMaxWidth().padding(15.dp), color = MaterialTheme.colorScheme.onSecondaryContainer) } } }
-        item { Text("Esta herramienta no extrae variantes privadas ni elimina marcas de agua. Está diseñada para archivos propios o expresamente autorizados.", color = MaterialTheme.colorScheme.outline, fontSize = 12.sp, lineHeight = 17.sp, modifier = Modifier.padding(horizontal = 5.dp)) }
-    }
-}
-
-private fun isHttpUrl(value: String): Boolean = runCatching { Uri.parse(value) }.getOrNull()?.let { it.scheme in listOf("http", "https") && !it.host.isNullOrBlank() } == true
-
-private fun isTikTokUrl(uri: Uri): Boolean {
-    val host = uri.host?.lowercase(Locale.US).orEmpty()
-    return uri.scheme in listOf("http", "https") && (host == "tiktok.com" || host.endsWith(".tiktok.com"))
-}
-
-private data class VideoUrlCheck(val isVideo: Boolean, val resolvedUrl: String, val error: String? = null)
-
-private suspend fun inspectDirectVideoUrl(value: String): VideoUrlCheck = withContext(Dispatchers.IO) {
-    val connection = runCatching { URL(value).openConnection() as HttpURLConnection }.getOrElse { return@withContext VideoUrlCheck(false, value, "La dirección no se pudo abrir.") }
-    try {
-        connection.instanceFollowRedirects = true
-        connection.requestMethod = "GET"
-        connection.setRequestProperty("Range", "bytes=0-1")
-        connection.setRequestProperty("Accept", "video/all,application/octet-stream")
-        connection.setRequestProperty("User-Agent", VIDEO_USER_AGENT)
-        connection.connectTimeout = 12_000
-        connection.readTimeout = 12_000
-        val status = connection.responseCode
-        val contentType = connection.contentType.orEmpty().substringBefore(';').trim().lowercase(Locale.US)
-        val resolved = connection.url.toString()
-        val looksLikeVideo = contentType.startsWith("video/") || (contentType == "application/octet-stream" && Uri.parse(resolved).path.orEmpty().lowercase(Locale.US).endsWith(".mp4"))
-        when {
-            status !in 200..299 -> VideoUrlCheck(false, resolved, "El servidor rechazó el enlace (error $status). Puede haber caducado o requerir una sesión.")
-            contentType.contains("html") || contentType.startsWith("text/") -> VideoUrlCheck(false, resolved, "El enlace conduce a una página web ($contentType), no al archivo MP4.")
-            !looksLikeVideo -> VideoUrlCheck(false, resolved, "El servidor respondió con ${contentType.ifBlank { "un tipo desconocido" }}; no se puede confirmar que sea un video.")
-            else -> VideoUrlCheck(true, resolved)
-        }
-    } catch (error: Exception) {
-        VideoUrlCheck(false, value, "No se pudo verificar el video: ${error.message ?: "conexión fallida"}")
-    } finally { connection.disconnect() }
-}
-
-private const val VIDEO_USER_AGENT = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36"
-
-private fun enqueueVideoDownload(context: Context, url: String, requestedName: String): String = runCatching {
-    val cleanName = requestedName.replace(Regex("[^a-zA-Z0-9._ -]"), "_").trim().removeSuffix(".mp4").ifBlank { "video-${System.currentTimeMillis()}" }
-    val request = DownloadManager.Request(Uri.parse(url))
-        .setTitle("$cleanName.mp4")
-        .setDescription("Descargando video autorizado")
-        .setMimeType("video/mp4")
-        .addRequestHeader("Accept", "video/all,application/octet-stream")
-        .addRequestHeader("User-Agent", VIDEO_USER_AGENT)
-        .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-        .setAllowedOverMetered(true)
-        .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "$cleanName.mp4")
-    val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-    manager.enqueue(request)
-    "Descarga iniciada. Puedes seguir el progreso desde las notificaciones."
-}.getOrElse { "No se pudo iniciar la descarga: ${it.message ?: "URL no compatible"}" }
-*/
-
 private object AnimeApi {
     private const val ENDPOINT = "https://kitsu.io/api/edge/anime"
 
     suspend fun search(query: String): List<AnimeItem> = withContext(Dispatchers.IO) {
         val encoded = URLEncoder.encode(query.trim(), "UTF-8")
-        val connection = (URL("$ENDPOINT?filter%5Btext%5D=$encoded&page%5Blimit%5D=20").openConnection() as HttpURLConnection).apply {
+        val connection = (URL("$ENDPOINT?filter%5Btext%5D=$encoded&page%5Blimit%5D=20&include=categories").openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             setRequestProperty("Accept", "application/vnd.api+json")
             connectTimeout = 12_000
@@ -376,19 +252,32 @@ private object AnimeApi {
     }
 
     private fun parseAnimeResponse(body: String): List<AnimeItem> {
-        val array = JSONObject(body).optJSONArray("data") ?: JSONArray()
-        return List(array.length()) { index -> array.optJSONObject(index) }.filterNotNull().mapIndexed(::parseAnimeItem)
+        val root = JSONObject(body)
+        val array = root.optJSONArray("data") ?: JSONArray()
+        val included = root.optJSONArray("included") ?: JSONArray()
+        val categoryNames = buildMap {
+            repeat(included.length()) { index ->
+                val category = included.optJSONObject(index) ?: return@repeat
+                if (category.optString("type") == "categories") {
+                    val name = category.optJSONObject("attributes")?.optString("title").orEmpty()
+                    if (name.isNotBlank()) put(category.optString("id"), name)
+                }
+            }
+        }
+        return List(array.length()) { index -> array.optJSONObject(index) }.filterNotNull().mapIndexed { index, item -> parseAnimeItem(item, index, categoryNames) }
     }
 
     private fun parseAnimeItem(index: Int, item: JSONObject): AnimeItem = parseAnimeItem(item, index)
 
-    private fun parseAnimeItem(item: JSONObject, index: Int): AnimeItem {
+    private fun parseAnimeItem(item: JSONObject, index: Int, categoryNames: Map<String, String> = emptyMap()): AnimeItem {
         val attributes = item.optJSONObject("attributes") ?: JSONObject()
         val titles = attributes.optJSONObject("titles")
         val title = sequenceOf(attributes.optString("canonicalTitle"), titles?.optString("en").orEmpty(), titles?.optString("en_jp").orEmpty(), titles?.optString("ja_jp").orEmpty()).firstOrNull { it.isNotBlank() } ?: "Anime"
         val poster = attributes.optJSONObject("posterImage")
         val image = sequenceOf("large", "medium", "small", "original", "tiny").map { poster?.optString(it).orEmpty() }.firstOrNull { it.startsWith("http") }.orEmpty()
-        return AnimeItem(item.optString("id").ifBlank { "$title-$index" }, title, image, attributes.optIntOrNull("episodeCount"), attributes.optString("averageRating").toDoubleOrNull()?.div(10.0), attributes.optString("synopsis", attributes.optString("description")))
+        val categoryData = item.optJSONObject("relationships")?.optJSONObject("categories")?.optJSONArray("data") ?: JSONArray()
+        val genres = List(categoryData.length()) { categoryData.optJSONObject(it)?.optString("id").orEmpty() }.mapNotNull(categoryNames::get).distinct()
+        return AnimeItem(item.optString("id").ifBlank { "$title-$index" }, title, image, attributes.optIntOrNull("episodeCount"), attributes.optString("averageRating").toDoubleOrNull()?.div(10.0), attributes.optString("synopsis", attributes.optString("description")), genres = genres)
     }
 
     private fun relationshipOrder(role: String) = when (role) { "prequel" -> 0; "sequel" -> 1; "spinoff" -> 2; "side_story" -> 3; else -> 4 }
@@ -412,10 +301,11 @@ private fun AnimeScreen(items: List<AnimeItem>, padding: PaddingValues, onAdd: (
     var results by remember { mutableStateOf<List<AnimeItem>>(emptyList()) }
     var searching by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var filter by rememberSaveable { mutableStateOf("Todos") }
+    var libraryOpen by rememberSaveable { mutableStateOf(false) }
     var selectedAnime by remember { mutableStateOf<AnimeItem?>(null) }
     val scope = rememberCoroutineScope()
-    val library = items.filter { filter == "Todos" || it.watchStatus == filter }
+
+    if (libraryOpen) BackHandler { libraryOpen = false }
 
     selectedAnime?.let { selected ->
         val saved = items.firstOrNull { it.apiId == selected.apiId }
@@ -452,33 +342,36 @@ private fun AnimeScreen(items: List<AnimeItem>, padding: PaddingValues, onAdd: (
         }
     }
 
-    LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(20.dp, 24.dp, 20.dp, 112.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item {
-            ScreenHeader("Tu mundo anime", "Lista de anime", "Descubre títulos y lleva el control de lo que ves.", items.size)
-            Spacer(Modifier.height(22.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(query, { query = it }, Modifier.weight(1f), placeholder = { Text("Buscar anime") }, leadingIcon = { Text("⌕", fontSize = 23.sp) }, singleLine = true, shape = RoundedCornerShape(20.dp), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text), keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { runSearch() }))
-                Button({ runSearch() }, Modifier.padding(start = 9.dp).height(56.dp), enabled = query.trim().length >= 2 && !searching, shape = RoundedCornerShape(18.dp), contentPadding = PaddingValues(horizontal = 17.dp)) { if (searching) CircularProgressIndicator(Modifier.size(21.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary) else Text("Buscar") }
-            }
-            if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error, fontSize = 13.sp, modifier = Modifier.padding(top = 9.dp))
-        }
+    if (libraryOpen) {
+        AnimeLibraryOverview(items, padding, onBack = { libraryOpen = false }, onDetails = { selectedAnime = it })
+        return
+    }
 
+    LazyVerticalGrid(columns = GridCells.Fixed(2), modifier = Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(20.dp, 24.dp, 20.dp, 112.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            Column {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("TU MUNDO ANIME", color = MaterialTheme.colorScheme.primary, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp)
+                        Text("Explorar anime", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 4.dp))
+                    }
+                    FilledTonalButton({ libraryOpen = true }, shape = RoundedCornerShape(18.dp), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 11.dp)) { Text("Mi lista  ${items.size}", fontWeight = FontWeight.Bold) }
+                }
+                Text("Busca títulos y agrégalos a tu colección personal.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
+                Spacer(Modifier.height(20.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(query, { query = it }, Modifier.weight(1f), placeholder = { Text("Buscar anime") }, leadingIcon = { Text("⌕", fontSize = 23.sp) }, singleLine = true, shape = RoundedCornerShape(20.dp), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text), keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { runSearch() }))
+                    FilledIconButton({ runSearch() }, Modifier.padding(start = 9.dp).size(56.dp), enabled = query.trim().length >= 2 && !searching, shape = RoundedCornerShape(18.dp)) { if (searching) CircularProgressIndicator(Modifier.size(21.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary) else Text("⌕", fontSize = 24.sp) }
+                }
+                if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error, fontSize = 13.sp, modifier = Modifier.padding(top = 9.dp))
+            }
+        }
         if (results.isNotEmpty()) {
-            item { Text("Resultados", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 10.dp)) }
-            items(results.take(12), key = { "result-${it.apiId}" }) { anime ->
+            item(span = { GridItemSpan(maxLineSpan) }) { Text("Resultados", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp)) }
+            gridItems(results.take(20), key = { "result-${it.apiId}" }) { anime ->
                 AnimeResultCard(anime, alreadyAdded = items.any { it.apiId == anime.apiId }, onDetails = { selectedAnime = anime }) { onAdd(anime); results = results.filterNot { it.apiId == anime.apiId } }
             }
-            item { HorizontalDivider(Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outlineVariant) }
-        }
-
-        item {
-            Text("Mi lista", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp))
-            Row(Modifier.fillMaxWidth().padding(top = 12.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                listOf("Todos", "Quiero verlo", "Viendo", "Ya lo vi").forEach { value -> FilterChip(filter == value, { filter = value }, { Text(value, fontSize = 12.sp) }, shape = RoundedCornerShape(13.dp)) }
-            }
-        }
-        if (library.isEmpty()) item { EmptyState("▷", "Tu lista está vacía", "Busca un anime y agrégalo para comenzar tu colección.") }
-        items(library, key = { "saved-${it.apiId}" }) { anime -> AnimeLibraryCard(anime, { selectedAnime = anime }, onStatus, onDelete) }
+        } else if (query.isBlank()) item(span = { GridItemSpan(maxLineSpan) }) { EmptyState("⌕", "Empieza a explorar", "Escribe al menos dos letras para descubrir anime.") }
     }
 }
 
@@ -492,16 +385,109 @@ private fun AnimeArtwork(anime: AnimeItem, modifier: Modifier = Modifier) {
 
 @Composable
 private fun AnimeResultCard(anime: AnimeItem, alreadyAdded: Boolean, onDetails: () -> Unit, onAdd: () -> Unit) {
-    Card(Modifier.fillMaxWidth().clickable(onClick = onDetails), shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(2.dp)) {
-        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-        AnimeArtwork(anime, Modifier.size(width = 88.dp, height = 124.dp))
-        Column(Modifier.weight(1f).padding(start = 16.dp)) {
-            Text(anime.title, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text(listOfNotNull(anime.episodes?.let { "$it episodios" }, anime.rating?.let { "★ ${"%.1f".format(it)}" }).joinToString("  •  ").ifBlank { "Información disponible" }, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, modifier = Modifier.padding(top = 7.dp))
-            Text("Ver ficha completa  →", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp))
-            Button(onAdd, enabled = !alreadyAdded, shape = RoundedCornerShape(12.dp), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 7.dp), modifier = Modifier.padding(top = 10.dp)) { Text(if (alreadyAdded) "En mi lista" else "+ Mi lista", fontSize = 12.sp) }
+    Card(Modifier.fillMaxWidth().clickable(onClick = onDetails), shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(2.dp)) {
+        Column {
+            Box {
+                AnimeArtwork(anime, Modifier.fillMaxWidth().aspectRatio(0.72f))
+                Surface(Modifier.align(Alignment.TopEnd).padding(9.dp), shape = CircleShape, color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)) {
+                    Text(if (alreadyAdded) "✓" else "+", Modifier.clickable(enabled = !alreadyAdded, onClick = onAdd).padding(horizontal = 11.dp, vertical = 7.dp), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                }
+            }
+            Column(Modifier.padding(12.dp)) {
+                Text(anime.title, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, minLines = 2)
+                if (anime.genres.isNotEmpty()) Row(Modifier.padding(top = 9.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    anime.genres.forEach { genre -> AnimeGenrePill(genre) }
+                } else Text(anime.rating?.let { "★ ${"%.1f".format(it)}" } ?: "Ver detalles", color = MaterialTheme.colorScheme.primary, fontSize = 12.sp, modifier = Modifier.padding(top = 9.dp))
+            }
         }
-    } }
+    }
+}
+
+@Composable
+private fun AnimeLibraryOverview(items: List<AnimeItem>, padding: PaddingValues, onBack: () -> Unit, onDetails: (AnimeItem) -> Unit) {
+    val sections = listOf("Ya lo vi" to "Animes vistos", "Quiero verlo" to "Animes que quiero ver", "Viendo" to "Animes viendo")
+    var openStatus by rememberSaveable { mutableStateOf<String?>(null) }
+    openStatus?.let { status ->
+        val title = sections.firstOrNull { it.first == status }?.second ?: "Mi lista"
+        BackHandler { openStatus = null }
+        AnimeLibraryGrid(title, items.filter { it.watchStatus == status }, padding, onBack = { openStatus = null }, onDetails = onDetails)
+        return
+    }
+    LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(20.dp, 18.dp, 20.dp, 112.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        item {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                FilledTonalIconButton(onBack, Modifier.size(52.dp), shape = CircleShape) { Text("‹", fontSize = 32.sp) }
+                Column(Modifier.weight(1f).padding(start = 14.dp)) {
+                    Text("MI COLECCIÓN", color = MaterialTheme.colorScheme.primary, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp)
+                    Text("Mi lista de anime", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                }
+                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) { Text(items.size.toString(), Modifier.padding(horizontal = 14.dp, vertical = 9.dp), color = MaterialTheme.colorScheme.onPrimaryContainer, fontWeight = FontWeight.Bold) }
+            }
+        }
+        if (items.isEmpty()) item { EmptyState("▷", "Tu lista está vacía", "Busca un anime y agrégalo para comenzar tu colección.") }
+        sections.forEach { (status, title) ->
+            val sectionItems = items.filter { it.watchStatus == status }
+            item(key = "section-$status") { AnimeLibraryShelf(title, sectionItems, onOpen = { openStatus = status }, onDetails = onDetails) }
+        }
+    }
+}
+
+@Composable
+private fun AnimeLibraryShelf(title: String, items: List<AnimeItem>, onOpen: () -> Unit, onDetails: (AnimeItem) -> Unit) {
+    Card(Modifier.fillMaxWidth().clickable(onClick = onOpen), shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(2.dp)) {
+        Column(Modifier.padding(vertical = 17.dp)) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.secondaryContainer) { Text(items.size.toString(), Modifier.padding(horizontal = 11.dp, vertical = 5.dp), fontWeight = FontWeight.Bold, fontSize = 12.sp) }
+            }
+            if (items.isEmpty()) Text("Aún no hay títulos en esta sección.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 18.dp, vertical = 22.dp))
+            else LazyRow(contentPadding = PaddingValues(horizontal = 18.dp), horizontalArrangement = Arrangement.spacedBy(11.dp), modifier = Modifier.padding(top = 14.dp)) {
+                items(items, key = { "shelf-${it.apiId}" }) { anime ->
+                    Column(Modifier.width(104.dp).clickable { onDetails(anime) }) {
+                        AnimeArtwork(anime, Modifier.fillMaxWidth().height(142.dp))
+                        Text(anime.title, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 7.dp))
+                    }
+                }
+            }
+            if (items.isNotEmpty()) TextButton(onOpen, Modifier.align(Alignment.End).padding(end = 10.dp, top = 5.dp)) { Text("Ver todos  →", fontWeight = FontWeight.Bold) }
+        }
+    }
+}
+
+@Composable
+private fun AnimeLibraryGrid(title: String, items: List<AnimeItem>, padding: PaddingValues, onBack: () -> Unit, onDetails: (AnimeItem) -> Unit) {
+    LazyVerticalGrid(columns = GridCells.Fixed(2), modifier = Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(20.dp, 18.dp, 20.dp, 112.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            Row(Modifier.fillMaxWidth().padding(bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                FilledTonalIconButton(onBack, Modifier.size(52.dp), shape = CircleShape) { Text("‹", fontSize = 32.sp) }
+                Column(Modifier.weight(1f).padding(start = 14.dp)) {
+                    Text("MI LISTA DE ANIME", color = MaterialTheme.colorScheme.primary, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp)
+                    Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                }
+                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) { Text(items.size.toString(), Modifier.padding(horizontal = 13.dp, vertical = 8.dp), fontWeight = FontWeight.Bold) }
+            }
+        }
+        gridItems(items, key = { "library-grid-${it.apiId}" }) { anime -> AnimeSavedGridCard(anime, { onDetails(anime) }) }
+    }
+}
+
+@Composable
+private fun AnimeSavedGridCard(anime: AnimeItem, onDetails: () -> Unit) {
+    Card(Modifier.fillMaxWidth().clickable(onClick = onDetails), shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(2.dp)) {
+        Column {
+            AnimeArtwork(anime, Modifier.fillMaxWidth().aspectRatio(0.72f))
+            Column(Modifier.padding(12.dp)) {
+                Text(anime.title, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, minLines = 2)
+                Spacer(Modifier.height(8.dp)); AnimeStatusPill(anime.watchStatus)
+                if (anime.genres.isNotEmpty()) Row(Modifier.padding(top = 8.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) { anime.genres.forEach { AnimeGenrePill(it) } }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AnimeGenrePill(text: String) {
+    Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.primaryContainer) { Text(text, Modifier.padding(horizontal = 7.dp, vertical = 4.dp), color = MaterialTheme.colorScheme.onPrimaryContainer, fontSize = 10.sp, fontWeight = FontWeight.SemiBold, maxLines = 1) }
 }
 
 @Composable
@@ -542,6 +528,7 @@ private fun AnimeDetailSheet(anime: AnimeItem, isSaved: Boolean, onDismiss: () -
                     if (isSaved) { Spacer(Modifier.height(12.dp)); AnimeStatusPill(anime.watchStatus) }
                     anime.rating?.let { Text("★  ${"%.1f".format(it)} / 10", color = Color(0xFFE59A22), fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 14.dp)) }
                     anime.episodes?.let { Text("$it episodios", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 7.dp)) }
+                    if (anime.genres.isNotEmpty()) Column(Modifier.padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) { anime.genres.forEach { AnimeGenrePill(it) } }
                 }
             }
             HorizontalDivider(Modifier.padding(vertical = 22.dp), color = MaterialTheme.colorScheme.outlineVariant)
@@ -647,3 +634,4 @@ private fun priorityOrder(priority: String) = when (priority) { "Alta" -> 0; "Me
 private fun categorySymbol(category: String) = when { category.contains("música", true) || category.contains("musica", true) -> "♪"; category.contains("película", true) || category.contains("serie", true) -> "▶"; category.contains("lugar", true) || category.contains("viaje", true) -> "⌖"; category.contains("libro", true) -> "▤"; else -> "♡" }
 private fun JSONObject.optIntOrNull(key: String): Int? = if (!has(key) || isNull(key)) null else optInt(key).takeIf { it > 0 }
 private fun JSONObject.optDoubleOrNull(key: String): Double? = if (!has(key) || isNull(key)) null else optDouble(key).takeIf { !it.isNaN() }
+private fun JSONObject.optStringList(key: String): List<String> = optJSONArray(key)?.let { array -> List(array.length()) { array.optString(it) }.filter(String::isNotBlank) } ?: emptyList()
