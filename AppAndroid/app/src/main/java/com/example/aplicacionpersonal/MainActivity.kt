@@ -72,6 +72,7 @@ data class TaskItem(val id: String = UUID.randomUUID().toString(), val title: St
 data class FavoriteItem(val id: String = UUID.randomUUID().toString(), val name: String, val category: String, val notes: String, val link: String)
 data class AnimeItem(val apiId: String, val title: String, val image: String, val episodes: Int?, val rating: Double?, val synopsis: String, val watchStatus: String = "Quiero verlo", val genres: List<String> = emptyList())
 data class RelatedAnime(val role: String, val anime: AnimeItem)
+data class AnimeGenre(val id: String, val name: String)
 data class ClassSession(val day: String, val start: String, val end: String)
 data class ScheduleOption(val sessions: List<ClassSession>)
 data class SubjectSchedule(val id: String = UUID.randomUUID().toString(), val name: String, val optionA: ScheduleOption, val optionB: ScheduleOption, val selectedOption: Int = 0)
@@ -406,10 +407,16 @@ private fun ScheduleTimeField(label: String, value: String, onChange: (String) -
 
 private object AnimeApi {
     private const val ENDPOINT = "https://kitsu.io/api/edge/anime"
+    private const val CATEGORIES_ENDPOINT = "https://kitsu.io/api/edge/categories"
 
-    suspend fun search(query: String): List<AnimeItem> = withContext(Dispatchers.IO) {
-        val encoded = URLEncoder.encode(query.trim(), "UTF-8")
-        val connection = (URL("$ENDPOINT?filter%5Btext%5D=$encoded&page%5Blimit%5D=20&include=categories").openConnection() as HttpURLConnection).apply {
+    suspend fun search(query: String, genreId: String? = null): List<AnimeItem> = withContext(Dispatchers.IO) {
+        val filters = buildList {
+            if (query.isNotBlank()) add("filter%5Btext%5D=${URLEncoder.encode(query.trim(), "UTF-8")}")
+            if (!genreId.isNullOrBlank()) add("filter%5Bcategories%5D=${URLEncoder.encode(genreId, "UTF-8")}")
+            add("page%5Blimit%5D=20")
+            add("include=categories")
+        }.joinToString("&")
+        val connection = (URL("$ENDPOINT?$filters").openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             setRequestProperty("Accept", "application/vnd.api+json")
             connectTimeout = 12_000
@@ -420,6 +427,19 @@ private object AnimeApi {
             val body = (if (status in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
             if (status !in 200..299) throw IllegalStateException(when (status) { 429 -> "Kitsu limitó temporalmente las consultas"; else -> "Kitsu respondió con error $status" })
             parseAnimeResponse(body)
+        } finally { connection.disconnect() }
+    }
+
+    suspend fun genres(): List<AnimeGenre> = withContext(Dispatchers.IO) {
+        val connection = (URL("$CATEGORIES_ENDPOINT?page%5Blimit%5D=40&sort=title").openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"; setRequestProperty("Accept", "application/vnd.api+json"); connectTimeout = 12_000; readTimeout = 12_000
+        }
+        try {
+            if (connection.responseCode !in 200..299) return@withContext emptyList()
+            val data = JSONObject(connection.inputStream.bufferedReader().use { it.readText() }).optJSONArray("data") ?: JSONArray()
+            List(data.length()) { data.optJSONObject(it) }.filterNotNull().mapNotNull { item ->
+                item.optJSONObject("attributes")?.optString("title")?.takeIf(String::isNotBlank)?.let { AnimeGenre(item.optString("id"), it) }
+            }.distinctBy { it.name.lowercase() }.sortedBy { it.name.lowercase() }
         } finally { connection.disconnect() }
     }
 
@@ -513,7 +533,11 @@ private fun AnimeScreen(items: List<AnimeItem>, padding: PaddingValues, onAdd: (
     var libraryOpen by rememberSaveable { mutableStateOf(false) }
     var genreSyncAttempted by rememberSaveable { mutableStateOf(false) }
     var selectedAnime by remember { mutableStateOf<AnimeItem?>(null) }
+    var genres by remember { mutableStateOf<List<AnimeGenre>>(emptyList()) }
+    var selectedGenre by remember { mutableStateOf<AnimeGenre?>(null) }
     val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) { runCatching { AnimeApi.genres() }.onSuccess { genres = it } }
 
     if (libraryOpen) BackHandler { libraryOpen = false }
     LaunchedEffect(libraryOpen) {
@@ -536,25 +560,25 @@ private fun AnimeScreen(items: List<AnimeItem>, padding: PaddingValues, onAdd: (
         )
     }
 
-    fun runSearch(term: String = query) {
+    fun runSearch(term: String = query, genre: AnimeGenre? = selectedGenre) {
         val requestedQuery = term.trim()
-        if (requestedQuery.length < 2) return
+        if (requestedQuery.length < 2 && genre == null) return
         searching = true; error = null
         scope.launch {
-            runCatching { AnimeApi.search(requestedQuery) }
-                .onSuccess { if (query.trim() == requestedQuery) { results = it; if (it.isEmpty()) error = "No se encontraron animes" } }
-                .onFailure { if (query.trim() == requestedQuery) error = it.message ?: "No fue posible conectar con la API" }
-            if (query.trim() == requestedQuery) searching = false
+            runCatching { AnimeApi.search(requestedQuery, genre?.id) }
+                .onSuccess { if (query.trim() == requestedQuery && selectedGenre?.id == genre?.id) { results = it; if (it.isEmpty()) error = "No se encontraron animes" } }
+                .onFailure { if (query.trim() == requestedQuery && selectedGenre?.id == genre?.id) error = it.message ?: "No fue posible conectar con la API" }
+            if (query.trim() == requestedQuery && selectedGenre?.id == genre?.id) searching = false
         }
     }
 
-    LaunchedEffect(query) {
+    LaunchedEffect(query, selectedGenre) {
         val requestedQuery = query.trim()
-        if (requestedQuery.length < 2) {
+        if (requestedQuery.length < 2 && selectedGenre == null) {
             results = emptyList(); error = null; searching = false
         } else {
             delay(450)
-            runSearch(requestedQuery)
+            runSearch(requestedQuery, selectedGenre)
         }
     }
 
@@ -576,9 +600,10 @@ private fun AnimeScreen(items: List<AnimeItem>, padding: PaddingValues, onAdd: (
                 Text("Busca títulos y agrégalos a tu colección personal.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
                 Spacer(Modifier.height(20.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(query, { query = it }, Modifier.weight(1f), placeholder = { Text("Buscar anime") }, leadingIcon = { Text("⌕", fontSize = 23.sp) }, singleLine = true, shape = RoundedCornerShape(20.dp), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text), keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { runSearch() }))
-                    FilledIconButton({ runSearch() }, Modifier.padding(start = 9.dp).size(56.dp), enabled = query.trim().length >= 2 && !searching, shape = RoundedCornerShape(18.dp)) { if (searching) CircularProgressIndicator(Modifier.size(21.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary) else Text("⌕", fontSize = 24.sp) }
+                    OutlinedTextField(query, { query = it }, Modifier.weight(1f), placeholder = { Text("Buscar anime") }, leadingIcon = { Text("⌕", fontSize = 23.sp) }, trailingIcon = if (query.isNotEmpty()) ({ IconButton({ query = ""; results = emptyList(); error = null }) { Text("×", fontSize = 22.sp) } }) else null, singleLine = true, shape = RoundedCornerShape(20.dp), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text), keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { runSearch() }))
+                    FilledIconButton({ runSearch() }, Modifier.padding(start = 9.dp).size(56.dp), enabled = (query.trim().length >= 2 || selectedGenre != null) && !searching, shape = RoundedCornerShape(18.dp)) { if (searching) CircularProgressIndicator(Modifier.size(21.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary) else Text("⌕", fontSize = 24.sp) }
                 }
+                AnimeGenreSelector(genres, selectedGenre, { selectedGenre = it }, Modifier.fillMaxWidth().padding(top = 10.dp))
                 if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error, fontSize = 13.sp, modifier = Modifier.padding(top = 9.dp))
             }
         }
@@ -587,7 +612,25 @@ private fun AnimeScreen(items: List<AnimeItem>, padding: PaddingValues, onAdd: (
             gridItems(results.take(20), key = { "result-${it.apiId}" }) { anime ->
                 AnimeResultCard(anime, alreadyAdded = items.any { it.apiId == anime.apiId }, onDetails = { selectedAnime = anime }) { onAdd(anime); results = results.filterNot { it.apiId == anime.apiId } }
             }
-        } else if (query.isBlank()) item(span = { GridItemSpan(maxLineSpan) }) { EmptyState("⌕", "Empieza a explorar", "Escribe al menos dos letras para descubrir anime.") }
+        } else if (query.isBlank() && selectedGenre == null) item(span = { GridItemSpan(maxLineSpan) }) { EmptyState("⌕", "Empieza a explorar", "Escribe al menos dos letras o selecciona un género.") }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AnimeGenreSelector(genres: List<AnimeGenre>, selected: AnimeGenre?, onSelected: (AnimeGenre?) -> Unit, modifier: Modifier = Modifier) {
+    var expanded by remember { mutableStateOf(false) }
+    ExposedDropdownMenuBox(expanded, { expanded = !expanded }, modifier) {
+        OutlinedTextField(
+            value = selected?.name ?: "Todos los géneros", onValueChange = {}, readOnly = true,
+            modifier = Modifier.fillMaxWidth().menuAnchor(), label = { Text("Género") },
+            trailingIcon = { Row(verticalAlignment = Alignment.CenterVertically) { if (selected != null) IconButton({ onSelected(null) }) { Text("×", fontSize = 20.sp) }; ExposedDropdownMenuDefaults.TrailingIcon(expanded) } },
+            shape = RoundedCornerShape(18.dp)
+        )
+        ExposedDropdownMenu(expanded, { expanded = false }) {
+            DropdownMenuItem({ Text("Todos los géneros") }, onClick = { onSelected(null); expanded = false })
+            genres.forEach { genre -> DropdownMenuItem({ Text(genre.name) }, onClick = { onSelected(genre); expanded = false }) }
+        }
     }
 }
 
@@ -623,10 +666,20 @@ private fun AnimeResultCard(anime: AnimeItem, alreadyAdded: Boolean, onDetails: 
 private fun AnimeLibraryOverview(items: List<AnimeItem>, padding: PaddingValues, onBack: () -> Unit, onDetails: (AnimeItem) -> Unit) {
     val sections = listOf("Ya lo vi" to "Animes vistos", "Quiero verlo" to "Animes que quiero ver", "Viendo" to "Animes viendo")
     var openStatus by rememberSaveable { mutableStateOf<String?>(null) }
+    var libraryQuery by rememberSaveable { mutableStateOf("") }
+    var selectedGenre by remember { mutableStateOf<AnimeGenre?>(null) }
+    val libraryGenres = remember(items) { items.flatMap { it.genres }.distinctBy { it.lowercase() }.sortedBy { it.lowercase() }.map { AnimeGenre(it, it) } }
+    val filteredItems = remember(items, libraryQuery, selectedGenre) {
+        val term = libraryQuery.trim()
+        items.filter { anime ->
+            (term.isBlank() || anime.title.contains(term, ignoreCase = true) || anime.genres.any { it.contains(term, ignoreCase = true) }) &&
+                (selectedGenre == null || anime.genres.any { it.equals(selectedGenre!!.name, ignoreCase = true) })
+        }
+    }
     openStatus?.let { status ->
         val title = sections.firstOrNull { it.first == status }?.second ?: "Mi lista"
         BackHandler { openStatus = null }
-        AnimeLibraryGrid(title, items.filter { it.watchStatus == status }, padding, onBack = { openStatus = null }, onDetails = onDetails)
+        AnimeLibraryGrid(title, filteredItems.filter { it.watchStatus == status }, padding, onBack = { openStatus = null }, onDetails = onDetails)
         return
     }
     LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(20.dp, 18.dp, 20.dp, 112.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
@@ -640,10 +693,23 @@ private fun AnimeLibraryOverview(items: List<AnimeItem>, padding: PaddingValues,
                 Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) { Text(items.size.toString(), Modifier.padding(horizontal = 14.dp, vertical = 9.dp), color = MaterialTheme.colorScheme.onPrimaryContainer, fontWeight = FontWeight.Bold) }
             }
         }
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    libraryQuery, { libraryQuery = it }, Modifier.fillMaxWidth(), placeholder = { Text("Buscar en mi lista") },
+                    leadingIcon = { Text("⌕", fontSize = 23.sp) },
+                    trailingIcon = if (libraryQuery.isNotEmpty()) ({ IconButton({ libraryQuery = "" }) { Text("×", fontSize = 22.sp) } }) else null,
+                    singleLine = true, shape = RoundedCornerShape(20.dp)
+                )
+                AnimeGenreSelector(libraryGenres, selectedGenre, { selectedGenre = it }, Modifier.fillMaxWidth())
+                if (libraryQuery.isNotBlank() || selectedGenre != null) Text("${filteredItems.size} de ${items.size} animes", color = MaterialTheme.colorScheme.primary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+        }
         if (items.isEmpty()) item { EmptyState("▷", "Tu lista está vacía", "Busca un anime y agrégalo para comenzar tu colección.") }
+        else if (filteredItems.isEmpty()) item { EmptyState("⌕", "Sin coincidencias", "Prueba otro título o cambia el género seleccionado.") }
         sections.forEach { (status, title) ->
-            val sectionItems = items.filter { it.watchStatus == status }
-            item(key = "section-$status") { AnimeLibraryShelf(title, sectionItems, onOpen = { openStatus = status }, onDetails = onDetails) }
+            val sectionItems = filteredItems.filter { it.watchStatus == status }
+            if (filteredItems.isNotEmpty()) item(key = "section-$status") { AnimeLibraryShelf(title, sectionItems, onOpen = { openStatus = status }, onDetails = onDetails) }
         }
     }
 }
