@@ -64,15 +64,19 @@ import java.net.URLEncoder
 import java.io.File
 import java.io.FileOutputStream
 import java.text.NumberFormat
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
 import java.util.Locale
 import java.util.UUID
 
 data class WishItem(val id: String = UUID.randomUUID().toString(), val name: String, val description: String, val price: Double?, val store: String, val purchased: Boolean = false)
-data class TaskItem(val id: String = UUID.randomUUID().toString(), val title: String, val details: String, val due: String, val priority: String, val completed: Boolean = false)
+data class TaskItem(val id: String = UUID.randomUUID().toString(), val title: String, val details: String, val due: String, val priority: String, val completed: Boolean = false, val dueDateMillis: Long? = null, val dueTime: String = "", val completedAtMillis: Long? = null)
 data class FavoriteItem(val id: String = UUID.randomUUID().toString(), val name: String, val category: String, val notes: String, val link: String)
 data class AnimeItem(val apiId: String, val title: String, val image: String, val episodes: Int?, val rating: Double?, val synopsis: String, val watchStatus: String = "Quiero verlo", val genres: List<String> = emptyList())
 data class RelatedAnime(val role: String, val anime: AnimeItem)
-data class AnimeGenre(val id: String, val name: String)
+data class AnimeGenre(val id: String, val name: String, val slug: String = id)
+data class AnimeLibraryGroup(val main: AnimeItem, val seasons: List<AnimeItem>)
 data class ClassSession(val day: String, val start: String, val end: String)
 data class ScheduleOption(val sessions: List<ClassSession>)
 data class SubjectSchedule(val id: String = UUID.randomUUID().toString(), val name: String, val optionA: ScheduleOption, val optionB: ScheduleOption, val selectedOption: Int = 0)
@@ -83,8 +87,8 @@ private class PersonalRepository(context: Context) {
 
     fun loadWishes(): List<WishItem> = parse("items", wishesPrefs) { item -> WishItem(item.getString("id"), item.getString("name"), item.optString("description"), if (item.isNull("price")) null else item.getDouble("price"), item.optString("store"), item.optBoolean("purchased")) }
     fun saveWishes(items: List<WishItem>) = save("items", wishesPrefs, items) { wish -> JSONObject().put("id", wish.id).put("name", wish.name).put("description", wish.description).put("price", wish.price ?: JSONObject.NULL).put("store", wish.store).put("purchased", wish.purchased) }
-    fun loadTasks(): List<TaskItem> = parse("tasks", prefs) { item -> TaskItem(item.getString("id"), item.getString("title"), item.optString("details"), item.optString("due"), item.optString("priority", "Media"), item.optBoolean("completed")) }
-    fun saveTasks(items: List<TaskItem>) = save("tasks", prefs, items) { task -> JSONObject().put("id", task.id).put("title", task.title).put("details", task.details).put("due", task.due).put("priority", task.priority).put("completed", task.completed) }
+    fun loadTasks(): List<TaskItem> = parse("tasks", prefs) { item -> TaskItem(item.getString("id"), item.getString("title"), item.optString("details"), item.optString("due"), item.optString("priority", "Media"), item.optBoolean("completed"), item.optLongOrNull("dueDateMillis"), item.optString("dueTime"), item.optLongOrNull("completedAtMillis")) }
+    fun saveTasks(items: List<TaskItem>) = save("tasks", prefs, items) { task -> JSONObject().put("id", task.id).put("title", task.title).put("details", task.details).put("due", task.due).put("priority", task.priority).put("completed", task.completed).put("dueDateMillis", task.dueDateMillis ?: JSONObject.NULL).put("dueTime", task.dueTime).put("completedAtMillis", task.completedAtMillis ?: JSONObject.NULL) }
     fun loadFavorites(): List<FavoriteItem> = parse("favorites", prefs) { item -> FavoriteItem(item.getString("id"), item.getString("name"), item.optString("category"), item.optString("notes"), item.optString("link")) }
     fun saveFavorites(items: List<FavoriteItem>) = save("favorites", prefs, items) { favorite -> JSONObject().put("id", favorite.id).put("name", favorite.name).put("category", favorite.category).put("notes", favorite.notes).put("link", favorite.link) }
     fun loadAnime(): List<AnimeItem> = parse("anime", prefs) { item -> AnimeItem(item.getString("apiId"), item.getString("title"), item.optString("image"), item.optIntOrNull("episodes"), item.optDoubleOrNull("rating"), item.optString("synopsis"), item.optString("watchStatus", "Quiero verlo"), item.optStringList("genres")) }
@@ -151,7 +155,7 @@ private fun PersonalHub(repository: PersonalRepository) {
         AnimatedContent(targetState = section, label = "section") { current ->
             when (current) {
                 Section.WISHES -> WishesScreen(wishes, padding, onToggle = { target -> wishes = wishes.map { if (it.id == target.id) it.copy(purchased = !it.purchased) else it }; repository.saveWishes(wishes) }, onEdit = { editingWish = it; formOpen = true }, onDelete = { target -> wishes = wishes.filterNot { it.id == target.id }; repository.saveWishes(wishes) })
-                Section.TASKS -> TasksScreen(tasks, padding, onToggle = { target -> tasks = tasks.map { if (it.id == target.id) it.copy(completed = !it.completed) else it }; repository.saveTasks(tasks) }, onEdit = { editingTask = it; formOpen = true }, onDelete = { target -> tasks = tasks.filterNot { it.id == target.id }; repository.saveTasks(tasks) })
+                Section.TASKS -> TasksScreen(tasks, padding, onToggle = { target -> tasks = tasks.map { if (it.id == target.id) { val done = !it.completed; it.copy(completed = done, completedAtMillis = if (done) System.currentTimeMillis() else null) } else it }; repository.saveTasks(tasks) }, onEdit = { editingTask = it; formOpen = true }, onDelete = { target -> tasks = tasks.filterNot { it.id == target.id }; repository.saveTasks(tasks) })
                 Section.FAVORITES -> FavoritesScreen(favorites, padding, onEdit = { editingFavorite = it; formOpen = true }, onDelete = { target -> favorites = favorites.filterNot { it.id == target.id }; repository.saveFavorites(favorites) })
                 Section.ANIME -> AnimeScreen(anime, padding, onAdd = { result -> anime = if (anime.none { it.apiId == result.apiId }) anime + result else anime.map { saved -> if (saved.apiId == result.apiId) result.copy(watchStatus = saved.watchStatus) else saved }; repository.saveAnime(anime) }, onStatus = { target, status -> anime = anime.map { if (it.apiId == target.apiId) it.copy(watchStatus = status) else it }; repository.saveAnime(anime) }, onDelete = { target -> anime = anime.filterNot { it.apiId == target.apiId }; repository.saveAnime(anime) }, onSync = { refreshed -> anime = refreshed; repository.saveAnime(anime) })
                 Section.SCHEDULE -> ScheduleScreen(subjects, padding, onSelect = { target, selected -> subjects = subjects.map { if (it.id == target.id) it.copy(selectedOption = selected) else it }; repository.saveSubjects(subjects) }, onEdit = { editingSubject = it; formOpen = true }, onDelete = { target -> subjects = subjects.filterNot { it.id == target.id }; repository.saveSubjects(subjects) })
@@ -207,11 +211,50 @@ private fun WishesScreen(items: List<WishItem>, padding: PaddingValues, onToggle
 
 @Composable
 private fun TasksScreen(items: List<TaskItem>, padding: PaddingValues, onToggle: (TaskItem) -> Unit, onEdit: (TaskItem) -> Unit, onDelete: (TaskItem) -> Unit) {
-    var mode by rememberSaveable { mutableIntStateOf(0) }; val visible = items.filter { if (mode == 0) !it.completed else it.completed }.sortedBy { priorityOrder(it.priority) }
+    var mode by rememberSaveable { mutableIntStateOf(0) }
+    val now = System.currentTimeMillis()
+    val visible = items.filter { if (mode == 0) !it.completed && !it.isExpired(now) else it.completed || it.isExpired(now) }.sortedWith(compareBy<TaskItem> { it.completed || it.isExpired(now) }.thenBy { it.dueAtMillis() ?: Long.MAX_VALUE }.thenBy { priorityOrder(it.priority) })
     LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(20.dp, 24.dp, 20.dp, 112.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { ScreenHeader("Enfoque diario", "Mis tareas", "Pequeños pasos, progreso real.", items.count { !it.completed }); FilterRow(mode, listOf("Por hacer" to items.count { !it.completed }, "Completadas" to items.count { it.completed })) { mode = it } }
+        item { ScreenHeader("Enfoque diario", "Mis tareas", "Pequeños pasos, progreso real.", items.count { !it.completed && !it.isExpired(now) }); FilterRow(mode, listOf("Por hacer" to items.count { !it.completed && !it.isExpired(now) }, "Completadas" to items.count { it.completed || it.isExpired(now) })) { mode = it } }
         if (visible.isEmpty()) item { EmptyState("✓", if (mode == 0) "Todo está en orden" else "Aún no hay completadas", if (mode == 0) "Agrega una tarea cuando tengas algo pendiente." else "Las tareas terminadas aparecerán aquí.") }
-        items(visible, key = { it.id }) { item -> ElegantCard(onClick = { onEdit(item) }) { Row(verticalAlignment = Alignment.Top) { CheckControl(item.completed) { onToggle(item) }; Column(Modifier.weight(1f).padding(horizontal = 12.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Text(item.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f)); PriorityDot(item.priority) }; if (item.details.isNotBlank()) Text(item.details, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp)); if (item.due.isNotBlank()) Text("○  ${item.due}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, modifier = Modifier.padding(top = 13.dp)) }; ItemMenu({ onEdit(item) }, { onDelete(item) }) } } }
+        items(visible, key = { it.id }) { item -> TaskCard(item, now, onToggle, onEdit, onDelete) }
+    }
+}
+
+@Composable
+private fun TaskCard(item: TaskItem, now: Long, onToggle: (TaskItem) -> Unit, onEdit: (TaskItem) -> Unit, onDelete: (TaskItem) -> Unit) {
+    val expired = item.isExpired(now)
+    ElegantCard(onClick = { onEdit(item) }) {
+        Row(verticalAlignment = Alignment.Top) {
+            CheckControl(item.completed) { onToggle(item) }
+            Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(item.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), color = if (expired && !item.completed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
+                    PriorityDot(item.priority)
+                }
+                if (item.details.isNotBlank()) Text(item.details, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp))
+                TaskStatusPill(item, expired)
+                val dateLine = when {
+                    item.completed -> item.completedAtMillis?.let { "Hecha: ${formatTaskDate(it)}" }
+                    expired -> item.dueDisplay()?.let { "Se esperaba: $it" }
+                    else -> item.dueDisplay()?.let { "Límite: $it" }
+                }
+                dateLine?.let { Text(it, color = if (expired && !item.completed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, modifier = Modifier.padding(top = 9.dp)) }
+            }
+            ItemMenu({ onEdit(item) }, { onDelete(item) })
+        }
+    }
+}
+
+@Composable
+private fun TaskStatusPill(item: TaskItem, expired: Boolean) {
+    val (text, color, content) = when {
+        item.completed -> Triple("Completada", Color(0xFFE2F4EB), Color(0xFF287A58))
+        expired -> Triple("Tiempo agotado", MaterialTheme.colorScheme.errorContainer, MaterialTheme.colorScheme.onErrorContainer)
+        else -> Triple("Pendiente", MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.colorScheme.onSecondaryContainer)
+    }
+    Surface(Modifier.padding(top = 10.dp), shape = RoundedCornerShape(12.dp), color = color) {
+        Text(text, Modifier.padding(horizontal = 10.dp, vertical = 5.dp), color = content, fontSize = 11.sp, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -409,10 +452,10 @@ private object AnimeApi {
     private const val ENDPOINT = "https://kitsu.io/api/edge/anime"
     private const val CATEGORIES_ENDPOINT = "https://kitsu.io/api/edge/categories"
 
-    suspend fun search(query: String, genreId: String? = null): List<AnimeItem> = withContext(Dispatchers.IO) {
+    suspend fun search(query: String, genreFilter: String? = null): List<AnimeItem> = withContext(Dispatchers.IO) {
         val filters = buildList {
             if (query.isNotBlank()) add("filter%5Btext%5D=${URLEncoder.encode(query.trim(), "UTF-8")}")
-            if (!genreId.isNullOrBlank()) add("filter%5Bcategories%5D=${URLEncoder.encode(genreId, "UTF-8")}")
+            if (!genreFilter.isNullOrBlank()) add("filter%5Bcategories%5D=${URLEncoder.encode(genreFilter, "UTF-8")}")
             add("page%5Blimit%5D=20")
             add("include=categories")
         }.joinToString("&")
@@ -431,16 +474,29 @@ private object AnimeApi {
     }
 
     suspend fun genres(): List<AnimeGenre> = withContext(Dispatchers.IO) {
-        val connection = (URL("$CATEGORIES_ENDPOINT?page%5Blimit%5D=40&sort=title").openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"; setRequestProperty("Accept", "application/vnd.api+json"); connectTimeout = 12_000; readTimeout = 12_000
+        val allGenres = mutableListOf<AnimeGenre>()
+        var nextUrl: String? = "$CATEGORIES_ENDPOINT?page%5Blimit%5D=100&sort=title"
+        repeat(12) {
+            val url = nextUrl ?: return@repeat
+            val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"; setRequestProperty("Accept", "application/vnd.api+json"); connectTimeout = 12_000; readTimeout = 12_000
+            }
+            try {
+                if (connection.responseCode !in 200..299) {
+                    nextUrl = null
+                    return@repeat
+                }
+                val root = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+                val data = root.optJSONArray("data") ?: JSONArray()
+                repeat(data.length()) { index ->
+                    val item = data.optJSONObject(index) ?: return@repeat
+                    val attributes = item.optJSONObject("attributes") ?: return@repeat
+                    attributes.optString("title").takeIf(String::isNotBlank)?.let { allGenres += AnimeGenre(item.optString("id"), it, attributes.optString("slug")) }
+                }
+                nextUrl = root.optJSONObject("links")?.optString("next")?.takeIf { it.startsWith("http") }
+            } finally { connection.disconnect() }
         }
-        try {
-            if (connection.responseCode !in 200..299) return@withContext emptyList()
-            val data = JSONObject(connection.inputStream.bufferedReader().use { it.readText() }).optJSONArray("data") ?: JSONArray()
-            List(data.length()) { data.optJSONObject(it) }.filterNotNull().mapNotNull { item ->
-                item.optJSONObject("attributes")?.optString("title")?.takeIf(String::isNotBlank)?.let { AnimeGenre(item.optString("id"), it) }
-            }.distinctBy { it.name.lowercase() }.sortedBy { it.name.lowercase() }
-        } finally { connection.disconnect() }
+        allGenres.distinctBy { it.name.lowercase() }.sortedBy { it.name.lowercase() }
     }
 
     suspend fun related(animeId: String): List<RelatedAnime> = withContext(Dispatchers.IO) {
@@ -535,6 +591,7 @@ private fun AnimeScreen(items: List<AnimeItem>, padding: PaddingValues, onAdd: (
     var selectedAnime by remember { mutableStateOf<AnimeItem?>(null) }
     var genres by remember { mutableStateOf<List<AnimeGenre>>(emptyList()) }
     var selectedGenre by remember { mutableStateOf<AnimeGenre?>(null) }
+    var genreQuery by rememberSaveable { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) { runCatching { AnimeApi.genres() }.onSuccess { genres = it } }
@@ -560,30 +617,33 @@ private fun AnimeScreen(items: List<AnimeItem>, padding: PaddingValues, onAdd: (
         )
     }
 
-    fun runSearch(term: String = query, genre: AnimeGenre? = selectedGenre) {
+    fun runSearch(term: String = query, genre: AnimeGenre? = selectedGenre, typedGenre: String = genreQuery) {
         val requestedQuery = term.trim()
-        if (requestedQuery.length < 2 && genre == null) return
+        val requestedGenreQuery = typedGenre.trim()
+        val genreFilter = resolveAnimeGenreFilter(genres, genre, requestedGenreQuery)
+        if (requestedQuery.length < 2 && genreFilter == null) return
         searching = true; error = null
         scope.launch {
-            runCatching { AnimeApi.search(requestedQuery, genre?.id) }
-                .onSuccess { if (query.trim() == requestedQuery && selectedGenre?.id == genre?.id) { results = it; if (it.isEmpty()) error = "No se encontraron animes" } }
-                .onFailure { if (query.trim() == requestedQuery && selectedGenre?.id == genre?.id) error = it.message ?: "No fue posible conectar con la API" }
-            if (query.trim() == requestedQuery && selectedGenre?.id == genre?.id) searching = false
+            runCatching { AnimeApi.search(requestedQuery, genreFilter) }
+                .onSuccess { if (query.trim() == requestedQuery && selectedGenre?.id == genre?.id && genreQuery.trim() == requestedGenreQuery) { results = it; if (it.isEmpty()) error = "No se encontraron animes" } }
+                .onFailure { if (query.trim() == requestedQuery && selectedGenre?.id == genre?.id && genreQuery.trim() == requestedGenreQuery) error = it.message ?: "No fue posible conectar con la API" }
+            if (query.trim() == requestedQuery && selectedGenre?.id == genre?.id && genreQuery.trim() == requestedGenreQuery) searching = false
         }
     }
 
-    LaunchedEffect(query, selectedGenre) {
+    LaunchedEffect(query, selectedGenre, genreQuery, genres) {
         val requestedQuery = query.trim()
-        if (requestedQuery.length < 2 && selectedGenre == null) {
+        val genreFilter = resolveAnimeGenreFilter(genres, selectedGenre, genreQuery)
+        if (requestedQuery.length < 2 && genreFilter == null) {
             results = emptyList(); error = null; searching = false
         } else {
             delay(450)
-            runSearch(requestedQuery, selectedGenre)
+            runSearch(requestedQuery, selectedGenre, genreQuery)
         }
     }
 
     if (libraryOpen) {
-        AnimeLibraryOverview(items, padding, onBack = { libraryOpen = false }, onDetails = { selectedAnime = it })
+        AnimeLibraryOverview(items, genres, padding, onBack = { libraryOpen = false }, onDetails = { selectedAnime = it })
         return
     }
 
@@ -601,9 +661,9 @@ private fun AnimeScreen(items: List<AnimeItem>, padding: PaddingValues, onAdd: (
                 Spacer(Modifier.height(20.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(query, { query = it }, Modifier.weight(1f), placeholder = { Text("Buscar anime") }, leadingIcon = { Text("⌕", fontSize = 23.sp) }, trailingIcon = if (query.isNotEmpty()) ({ IconButton({ query = ""; results = emptyList(); error = null }) { Text("×", fontSize = 22.sp) } }) else null, singleLine = true, shape = RoundedCornerShape(20.dp), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text), keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { runSearch() }))
-                    FilledIconButton({ runSearch() }, Modifier.padding(start = 9.dp).size(56.dp), enabled = (query.trim().length >= 2 || selectedGenre != null) && !searching, shape = RoundedCornerShape(18.dp)) { if (searching) CircularProgressIndicator(Modifier.size(21.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary) else Text("⌕", fontSize = 24.sp) }
+                    FilledIconButton({ runSearch() }, Modifier.padding(start = 9.dp).size(56.dp), enabled = (query.trim().length >= 2 || resolveAnimeGenreFilter(genres, selectedGenre, genreQuery) != null) && !searching, shape = RoundedCornerShape(18.dp)) { if (searching) CircularProgressIndicator(Modifier.size(21.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary) else Text("⌕", fontSize = 24.sp) }
                 }
-                AnimeGenreSelector(genres, selectedGenre, { selectedGenre = it }, Modifier.fillMaxWidth().padding(top = 10.dp))
+                AnimeGenreSelector(genres, selectedGenre, { selectedGenre = it }, genreQuery, { genreQuery = it }, Modifier.fillMaxWidth().padding(top = 10.dp))
                 if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error, fontSize = 13.sp, modifier = Modifier.padding(top = 9.dp))
             }
         }
@@ -612,24 +672,56 @@ private fun AnimeScreen(items: List<AnimeItem>, padding: PaddingValues, onAdd: (
             gridItems(results.take(20), key = { "result-${it.apiId}" }) { anime ->
                 AnimeResultCard(anime, alreadyAdded = items.any { it.apiId == anime.apiId }, onDetails = { selectedAnime = anime }) { onAdd(anime); results = results.filterNot { it.apiId == anime.apiId } }
             }
-        } else if (query.isBlank() && selectedGenre == null) item(span = { GridItemSpan(maxLineSpan) }) { EmptyState("⌕", "Empieza a explorar", "Escribe al menos dos letras o selecciona un género.") }
+        } else if (query.isBlank() && resolveAnimeGenreFilter(genres, selectedGenre, genreQuery) == null) item(span = { GridItemSpan(maxLineSpan) }) { EmptyState("⌕", "Empieza a explorar", "Escribe al menos dos letras o selecciona un género.") }
     }
+}
+
+private fun resolveAnimeGenreFilter(genres: List<AnimeGenre>, selected: AnimeGenre?, typedGenre: String): String? {
+    selected?.let { return it.slug.ifBlank { it.id.ifBlank { it.name } } }
+    val term = typedGenre.trim()
+    if (term.length < 2) return null
+    val normalized = term.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-')
+    val match = genres.firstOrNull { it.name.equals(term, ignoreCase = true) || it.slug.equals(normalized, ignoreCase = true) || it.id.equals(term, ignoreCase = true) }
+        ?: genres.firstOrNull { it.name.startsWith(term, ignoreCase = true) || it.slug.startsWith(normalized, ignoreCase = true) }
+        ?: genres.firstOrNull { it.name.contains(term, ignoreCase = true) || it.slug.contains(normalized, ignoreCase = true) }
+    return match?.slug?.ifBlank { match.id.ifBlank { match.name } }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AnimeGenreSelector(genres: List<AnimeGenre>, selected: AnimeGenre?, onSelected: (AnimeGenre?) -> Unit, modifier: Modifier = Modifier) {
+private fun AnimeGenreSelector(genres: List<AnimeGenre>, selected: AnimeGenre?, onSelected: (AnimeGenre?) -> Unit, genreQuery: String, onGenreQueryChange: (String) -> Unit, modifier: Modifier = Modifier) {
     var expanded by remember { mutableStateOf(false) }
+    val filteredGenres = remember(genres, genreQuery) {
+        val term = genreQuery.trim()
+        if (term.isBlank()) genres.take(20)
+        else genres.filter { it.name.contains(term, ignoreCase = true) }
+    }
+    LaunchedEffect(selected?.id) { if (selected != null) onGenreQueryChange(selected.name) }
     ExposedDropdownMenuBox(expanded, { expanded = !expanded }, modifier) {
         OutlinedTextField(
-            value = selected?.name ?: "Todos los géneros", onValueChange = {}, readOnly = true,
-            modifier = Modifier.fillMaxWidth().menuAnchor(), label = { Text("Género") },
-            trailingIcon = { Row(verticalAlignment = Alignment.CenterVertically) { if (selected != null) IconButton({ onSelected(null) }) { Text("×", fontSize = 20.sp) }; ExposedDropdownMenuDefaults.TrailingIcon(expanded) } },
+            value = genreQuery,
+            onValueChange = {
+                onGenreQueryChange(it)
+                expanded = true
+                if (selected != null && !selected.name.equals(it, ignoreCase = true)) onSelected(null)
+            },
+            modifier = Modifier.fillMaxWidth().menuAnchor(),
+            label = { Text("Género") },
+            placeholder = { Text("Escribe un género") },
+            leadingIcon = { Text("#", fontSize = 18.sp, fontWeight = FontWeight.Bold) },
+            trailingIcon = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (genreQuery.isNotBlank() || selected != null) IconButton({ onGenreQueryChange(""); onSelected(null); expanded = false }) { Text("×", fontSize = 20.sp) }
+                    ExposedDropdownMenuDefaults.TrailingIcon(expanded)
+                }
+            },
+            singleLine = true,
             shape = RoundedCornerShape(18.dp)
         )
         ExposedDropdownMenu(expanded, { expanded = false }) {
-            DropdownMenuItem({ Text("Todos los géneros") }, onClick = { onSelected(null); expanded = false })
-            genres.forEach { genre -> DropdownMenuItem({ Text(genre.name) }, onClick = { onSelected(genre); expanded = false }) }
+            DropdownMenuItem({ Text("Todos los géneros") }, onClick = { onGenreQueryChange(""); onSelected(null); expanded = false })
+            if (filteredGenres.isEmpty()) DropdownMenuItem({ Text("Sin coincidencias") }, onClick = { })
+            filteredGenres.forEach { genre -> DropdownMenuItem({ Text(genre.name) }, onClick = { onGenreQueryChange(genre.name); onSelected(genre); expanded = false }) }
         }
     }
 }
@@ -663,23 +755,38 @@ private fun AnimeResultCard(anime: AnimeItem, alreadyAdded: Boolean, onDetails: 
 }
 
 @Composable
-private fun AnimeLibraryOverview(items: List<AnimeItem>, padding: PaddingValues, onBack: () -> Unit, onDetails: (AnimeItem) -> Unit) {
+private fun AnimeLibraryOverview(items: List<AnimeItem>, allGenres: List<AnimeGenre>, padding: PaddingValues, onBack: () -> Unit, onDetails: (AnimeItem) -> Unit) {
     val sections = listOf("Ya lo vi" to "Animes vistos", "Quiero verlo" to "Animes que quiero ver", "Viendo" to "Animes viendo")
     var openStatus by rememberSaveable { mutableStateOf<String?>(null) }
     var libraryQuery by rememberSaveable { mutableStateOf("") }
     var selectedGenre by remember { mutableStateOf<AnimeGenre?>(null) }
-    val libraryGenres = remember(items) { items.flatMap { it.genres }.distinctBy { it.lowercase() }.sortedBy { it.lowercase() }.map { AnimeGenre(it, it) } }
-    val filteredItems = remember(items, libraryQuery, selectedGenre) {
+    var genreQuery by rememberSaveable { mutableStateOf("") }
+    var sortMode by rememberSaveable { mutableStateOf("Reciente") }
+    var relationsByAnime by remember { mutableStateOf<Map<String, Set<String>>>(emptyMap()) }
+    val libraryGenres = remember(items, allGenres) {
+        (allGenres + items.flatMap { it.genres }.map { AnimeGenre(it, it) }).distinctBy { it.name.lowercase() }.sortedBy { it.name.lowercase() }
+    }
+    LaunchedEffect(items.map { it.apiId }.sorted().joinToString(",")) {
+        val savedIds = items.map { it.apiId }.toSet()
+        val loaded = mutableMapOf<String, Set<String>>()
+        items.forEach { anime ->
+            loaded[anime.apiId] = runCatching { AnimeApi.related(anime.apiId).map { it.anime.apiId }.filter { it in savedIds }.toSet() }.getOrDefault(emptySet())
+        }
+        relationsByAnime = loaded
+    }
+    val filteredItems = remember(items, libraryQuery, selectedGenre, genreQuery) {
         val term = libraryQuery.trim()
+        val typedGenre = genreQuery.trim()
         items.filter { anime ->
             (term.isBlank() || anime.title.contains(term, ignoreCase = true) || anime.genres.any { it.contains(term, ignoreCase = true) }) &&
-                (selectedGenre == null || anime.genres.any { it.equals(selectedGenre!!.name, ignoreCase = true) })
+                (typedGenre.isBlank() || anime.genres.any { it.contains(typedGenre, ignoreCase = true) || it.equals(selectedGenre?.name, ignoreCase = true) })
         }
     }
     openStatus?.let { status ->
         val title = sections.firstOrNull { it.first == status }?.second ?: "Mi lista"
+        val groups = remember(filteredItems, relationsByAnime, sortMode, status) { sortAnimeGroups(groupSavedAnime(filteredItems.filter { it.watchStatus == status }, relationsByAnime), sortMode) }
         BackHandler { openStatus = null }
-        AnimeLibraryGrid(title, filteredItems.filter { it.watchStatus == status }, padding, onBack = { openStatus = null }, onDetails = onDetails)
+        AnimeLibraryGrid(title, groups, padding, onBack = { openStatus = null }, onDetails = onDetails)
         return
     }
     LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(20.dp, 18.dp, 20.dp, 112.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
@@ -701,44 +808,49 @@ private fun AnimeLibraryOverview(items: List<AnimeItem>, padding: PaddingValues,
                     trailingIcon = if (libraryQuery.isNotEmpty()) ({ IconButton({ libraryQuery = "" }) { Text("×", fontSize = 22.sp) } }) else null,
                     singleLine = true, shape = RoundedCornerShape(20.dp)
                 )
-                AnimeGenreSelector(libraryGenres, selectedGenre, { selectedGenre = it }, Modifier.fillMaxWidth())
-                if (libraryQuery.isNotBlank() || selectedGenre != null) Text("${filteredItems.size} de ${items.size} animes", color = MaterialTheme.colorScheme.primary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                AnimeGenreSelector(libraryGenres, selectedGenre, { selectedGenre = it }, genreQuery, { genreQuery = it }, Modifier.fillMaxWidth())
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("Reciente", "Mejor puntuación").forEach { option -> FilterChip(sortMode == option, { sortMode = option }, { Text(option) }, shape = RoundedCornerShape(14.dp)) }
+                }
+                if (libraryQuery.isNotBlank() || genreQuery.isNotBlank() || selectedGenre != null) Text("${filteredItems.size} de ${items.size} animes", color = MaterialTheme.colorScheme.primary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
         }
         if (items.isEmpty()) item { EmptyState("▷", "Tu lista está vacía", "Busca un anime y agrégalo para comenzar tu colección.") }
         else if (filteredItems.isEmpty()) item { EmptyState("⌕", "Sin coincidencias", "Prueba otro título o cambia el género seleccionado.") }
         sections.forEach { (status, title) ->
-            val sectionItems = filteredItems.filter { it.watchStatus == status }
-            if (filteredItems.isNotEmpty()) item(key = "section-$status") { AnimeLibraryShelf(title, sectionItems, onOpen = { openStatus = status }, onDetails = onDetails) }
+            val sectionGroups = sortAnimeGroups(groupSavedAnime(filteredItems.filter { it.watchStatus == status }, relationsByAnime), sortMode)
+            if (filteredItems.isNotEmpty()) item(key = "section-$status") { AnimeLibraryShelf(title, sectionGroups, onOpen = { openStatus = status }, onDetails = onDetails) }
         }
     }
 }
 
 @Composable
-private fun AnimeLibraryShelf(title: String, items: List<AnimeItem>, onOpen: () -> Unit, onDetails: (AnimeItem) -> Unit) {
+private fun AnimeLibraryShelf(title: String, groups: List<AnimeLibraryGroup>, onOpen: () -> Unit, onDetails: (AnimeItem) -> Unit) {
     Card(Modifier.fillMaxWidth().clickable(onClick = onOpen), shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(2.dp)) {
         Column(Modifier.padding(vertical = 17.dp)) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.secondaryContainer) { Text(items.size.toString(), Modifier.padding(horizontal = 11.dp, vertical = 5.dp), fontWeight = FontWeight.Bold, fontSize = 12.sp) }
+                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.secondaryContainer) { Text(groups.size.toString(), Modifier.padding(horizontal = 11.dp, vertical = 5.dp), fontWeight = FontWeight.Bold, fontSize = 12.sp) }
             }
-            if (items.isEmpty()) Text("Aún no hay títulos en esta sección.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 18.dp, vertical = 22.dp))
+            if (groups.isEmpty()) Text("Aún no hay títulos en esta sección.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 18.dp, vertical = 22.dp))
             else LazyRow(contentPadding = PaddingValues(horizontal = 18.dp), horizontalArrangement = Arrangement.spacedBy(11.dp), modifier = Modifier.padding(top = 14.dp)) {
-                items(items, key = { "shelf-${it.apiId}" }) { anime ->
+                items(groups, key = { "shelf-${it.main.apiId}" }) { group ->
+                    val anime = group.main
                     Column(Modifier.width(104.dp).clickable { onDetails(anime) }) {
                         AnimeArtwork(anime, Modifier.fillMaxWidth().height(142.dp))
                         Text(anime.title, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 7.dp))
+                        if (group.seasons.size > 1) Text("${group.seasons.size} partes", color = MaterialTheme.colorScheme.tertiary, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 3.dp))
                         if (anime.genres.isNotEmpty()) Text(anime.genres.joinToString(" • "), color = MaterialTheme.colorScheme.primary, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
                     }
                 }
             }
-            if (items.isNotEmpty()) TextButton(onOpen, Modifier.align(Alignment.End).padding(end = 10.dp, top = 5.dp)) { Text("Ver todos  →", fontWeight = FontWeight.Bold) }
+            if (groups.isNotEmpty()) TextButton(onOpen, Modifier.align(Alignment.End).padding(end = 10.dp, top = 5.dp)) { Text("Ver todos  →", fontWeight = FontWeight.Bold) }
         }
     }
 }
 
 @Composable
-private fun AnimeLibraryGrid(title: String, items: List<AnimeItem>, padding: PaddingValues, onBack: () -> Unit, onDetails: (AnimeItem) -> Unit) {
+private fun AnimeLibraryGrid(title: String, groups: List<AnimeLibraryGroup>, padding: PaddingValues, onBack: () -> Unit, onDetails: (AnimeItem) -> Unit) {
     LazyVerticalGrid(columns = GridCells.Fixed(2), modifier = Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(20.dp, 18.dp, 20.dp, 112.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item(span = { GridItemSpan(maxLineSpan) }) {
             Row(Modifier.fillMaxWidth().padding(bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -747,22 +859,40 @@ private fun AnimeLibraryGrid(title: String, items: List<AnimeItem>, padding: Pad
                     Text("MI LISTA DE ANIME", color = MaterialTheme.colorScheme.primary, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp)
                     Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                 }
-                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) { Text(items.size.toString(), Modifier.padding(horizontal = 13.dp, vertical = 8.dp), fontWeight = FontWeight.Bold) }
+                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) { Text(groups.size.toString(), Modifier.padding(horizontal = 13.dp, vertical = 8.dp), fontWeight = FontWeight.Bold) }
             }
         }
-        gridItems(items, key = { "library-grid-${it.apiId}" }) { anime -> AnimeSavedGridCard(anime, { onDetails(anime) }) }
+        gridItems(groups, key = { "library-grid-${it.main.apiId}" }) { group -> AnimeSavedGridCard(group, onDetails) }
     }
 }
 
 @Composable
-private fun AnimeSavedGridCard(anime: AnimeItem, onDetails: () -> Unit) {
-    Card(Modifier.fillMaxWidth().clickable(onClick = onDetails), shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(2.dp)) {
+private fun AnimeSavedGridCard(group: AnimeLibraryGroup, onDetails: (AnimeItem) -> Unit) {
+    val anime = group.main
+    var expanded by rememberSaveable(group.main.apiId) { mutableStateOf(false) }
+    Card(Modifier.fillMaxWidth().clickable { if (group.seasons.size > 1) expanded = !expanded else onDetails(anime) }, shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(2.dp)) {
         Column {
             AnimeArtwork(anime, Modifier.fillMaxWidth().aspectRatio(0.72f))
             Column(Modifier.padding(12.dp)) {
                 Text(anime.title, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, minLines = 2)
                 Spacer(Modifier.height(8.dp)); AnimeStatusPill(anime.watchStatus)
+                Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    anime.rating?.let { Text("★ ${"%.1f".format(it)}", color = Color(0xFFE59A22), fontWeight = FontWeight.Bold, fontSize = 12.sp) }
+                    if (group.seasons.size > 1) Text("${group.seasons.size} partes ${if (expanded) "⌃" else "⌄"}", color = MaterialTheme.colorScheme.tertiary, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                }
                 if (anime.genres.isNotEmpty()) Row(Modifier.padding(top = 8.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) { anime.genres.forEach { AnimeGenrePill(it) } }
+                if (expanded) {
+                    HorizontalDivider(Modifier.padding(vertical = 10.dp), color = MaterialTheme.colorScheme.outlineVariant)
+                    group.seasons.forEach { season ->
+                        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { onDetails(season) }.padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                            AnimeArtwork(season, Modifier.size(width = 38.dp, height = 52.dp))
+                            Column(Modifier.weight(1f).padding(start = 9.dp)) {
+                                Text(season.title, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                season.rating?.let { Text("★ ${"%.1f".format(it)}", color = Color(0xFFE59A22), fontSize = 11.sp, modifier = Modifier.padding(top = 2.dp)) }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -880,6 +1010,43 @@ private fun relationshipLabel(role: String) = when (role) {
     else -> "RELACIONADO"
 }
 
+private fun groupSavedAnime(items: List<AnimeItem>, relationsByAnime: Map<String, Set<String>>): List<AnimeLibraryGroup> {
+    val byId = items.associateBy { it.apiId }
+    val visited = mutableSetOf<String>()
+    return items.mapNotNull { start ->
+        if (!visited.add(start.apiId)) return@mapNotNull null
+        val component = mutableListOf<AnimeItem>()
+        val queue = ArrayDeque<String>().apply { add(start.apiId) }
+        while (queue.isNotEmpty()) {
+            val id = queue.removeFirst()
+            val anime = byId[id] ?: continue
+            component += anime
+            val linkedIds = relationsByAnime[id].orEmpty() + relationsByAnime.filterValues { id in it }.keys
+            linkedIds.filter { it in byId && visited.add(it) }.forEach(queue::add)
+        }
+        val seasons = component.distinctBy { it.apiId }.sortedWith(compareBy<AnimeItem> { seasonOrderHint(it.title) }.thenBy { it.title })
+        AnimeLibraryGroup(seasons.first(), seasons)
+    }
+}
+
+private fun sortAnimeGroups(groups: List<AnimeLibraryGroup>, mode: String): List<AnimeLibraryGroup> = when (mode) {
+    "Mejor puntuación" -> groups.sortedWith(compareByDescending<AnimeLibraryGroup> { it.seasons.mapNotNull(AnimeItem::rating).maxOrNull() ?: -1.0 }.thenBy { it.main.title })
+    else -> groups
+}
+
+private fun seasonOrderHint(title: String): Int {
+    val lower = title.lowercase()
+    val number = Regex("""(?:season|temporada|part)\s*(\d+)""").find(lower)?.groupValues?.getOrNull(1)?.toIntOrNull()
+    if (number != null) return number
+    return when {
+        "1st" in lower || "first" in lower -> 1
+        "2nd" in lower || "second" in lower -> 2
+        "3rd" in lower || "third" in lower -> 3
+        "4th" in lower || "fourth" in lower -> 4
+        else -> 99
+    }
+}
+
 @Composable
 private fun AnimeStatusPill(status: String) {
     val color = when (status) { "Viendo" -> Color(0xFF2878C8); "Ya lo vi" -> Color(0xFF3B8B68); else -> Color(0xFF7357B8) }
@@ -907,8 +1074,45 @@ private fun WishForm(existing: WishItem?, onBack: () -> Unit, onSave: (WishItem)
 
 @Composable
 private fun TaskForm(existing: TaskItem?, onBack: () -> Unit, onSave: (TaskItem) -> Unit) {
-    var title by rememberSaveable { mutableStateOf(existing?.title.orEmpty()) }; var details by rememberSaveable { mutableStateOf(existing?.details.orEmpty()) }; var due by rememberSaveable { mutableStateOf(existing?.due.orEmpty()) }; var priority by rememberSaveable { mutableStateOf(existing?.priority ?: "Media") }; var error by rememberSaveable { mutableStateOf(false) }
-    FormScaffold(if (existing == null) "Nueva tarea" else "Editar tarea", "Guardar tarea", onBack, { if (title.isBlank()) error = true else onSave(TaskItem(existing?.id ?: UUID.randomUUID().toString(), title.trim(), details.trim(), due.trim(), priority, existing?.completed ?: false)) }) { FormIntro("Aclara tu próximo paso", "Una tarea concreta siempre es más fácil de empezar."); AppField(title, { title = it; error = false }, "¿Qué tienes que hacer? *", error = error); AppField(details, { details = it }, "Notas", lines = 3); AppField(due, { due = it }, "Fecha o momento", hint = "Ej. Mañana, viernes, 20 de julio"); Text("Prioridad", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 18.dp, bottom = 8.dp)); Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Baja", "Media", "Alta").forEach { option -> FilterChip(priority == option, { priority = option }, { Text(option) }, shape = RoundedCornerShape(14.dp)) } } }
+    var title by rememberSaveable { mutableStateOf(existing?.title.orEmpty()) }
+    var details by rememberSaveable { mutableStateOf(existing?.details.orEmpty()) }
+    var dueDateMillis by rememberSaveable { mutableStateOf(existing?.dueDateMillis) }
+    var dueTime by rememberSaveable { mutableStateOf(existing?.dueTime.orEmpty()) }
+    var priority by rememberSaveable { mutableStateOf(existing?.priority ?: "Media") }
+    var error by rememberSaveable { mutableStateOf(false) }
+    FormScaffold(if (existing == null) "Nueva tarea" else "Editar tarea", "Guardar tarea", onBack, {
+        if (title.isBlank()) error = true else {
+            val dueText = taskDueText(dueDateMillis, dueTime).ifBlank { existing?.due.orEmpty() }
+            onSave(TaskItem(existing?.id ?: UUID.randomUUID().toString(), title.trim(), details.trim(), dueText, priority, existing?.completed ?: false, dueDateMillis, dueTime, existing?.completedAtMillis))
+        }
+    }) {
+        FormIntro("Aclara tu próximo paso", "Una tarea concreta siempre es más fácil de empezar.")
+        AppField(title, { title = it; error = false }, "¿Qué tienes que hacer? *", error = error)
+        AppField(details, { details = it }, "Notas", lines = 3)
+        TaskDueDateField(dueDateMillis, { dueDateMillis = it })
+        ScheduleTimeField("Hora límite", dueTime.ifBlank { "23:59" }, { dueTime = it }, Modifier.fillMaxWidth())
+        TextButton({ dueDateMillis = null; dueTime = "" }, Modifier.align(Alignment.End)) { Text("Sin fecha límite") }
+        Text("Prioridad", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 18.dp, bottom = 8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Baja", "Media", "Alta").forEach { option -> FilterChip(priority == option, { priority = option }, { Text(option) }, shape = RoundedCornerShape(14.dp)) } }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ColumnScope.TaskDueDateField(value: Long?, onChange: (Long?) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    OutlinedButton({ open = true }, Modifier.fillMaxWidth().height(58.dp), shape = RoundedCornerShape(15.dp), contentPadding = PaddingValues(horizontal = 14.dp)) {
+        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
+            Text("Fecha límite", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(value?.let { formatTaskDate(it) } ?: "Seleccionar fecha", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+        }
+    }
+    if (open) {
+        val state = rememberDatePickerState(initialSelectedDateMillis = value)
+        DatePickerDialog(onDismissRequest = { open = false }, confirmButton = { TextButton({ onChange(state.selectedDateMillis); open = false }) { Text("Aceptar") } }, dismissButton = { TextButton({ open = false }) { Text("Cancelar") } }) {
+            DatePicker(state)
+        }
+    }
 }
 
 @Composable
@@ -923,7 +1127,24 @@ private fun FavoriteForm(existing: FavoriteItem?, onBack: () -> Unit, onSave: (F
 private fun formatPrice(price: Double?) = price?.let { NumberFormat.getCurrencyInstance(Locale.US).format(it) } ?: "Sin precio"
 private fun priorityOrder(priority: String) = when (priority) { "Alta" -> 0; "Media" -> 1; else -> 2 }
 private fun categorySymbol(category: String) = when { category.contains("música", true) || category.contains("musica", true) -> "♪"; category.contains("película", true) || category.contains("serie", true) -> "▶"; category.contains("lugar", true) || category.contains("viaje", true) -> "⌖"; category.contains("libro", true) -> "▤"; else -> "♡" }
+private fun formatTaskDate(millis: Long): String = SimpleDateFormat("dd MMM yyyy", Locale.forLanguageTag("es-ES")).format(Date(millis))
+private fun formatTaskDateTime(millis: Long): String = SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.forLanguageTag("es-ES")).format(Date(millis))
+private fun taskDueText(dateMillis: Long?, time: String): String = dateMillis?.let { "${formatTaskDate(it)}${time.takeIf(String::isNotBlank)?.let { hour -> " · $hour" } ?: ""}" }.orEmpty()
+private fun TaskItem.dueAtMillis(): Long? {
+    val date = dueDateMillis ?: return null
+    val minutes = timeMinutes(dueTime).let { it ?: (23 * 60 + 59) }
+    return Calendar.getInstance().apply {
+        time = Date(date)
+        set(Calendar.HOUR_OF_DAY, minutes / 60)
+        set(Calendar.MINUTE, minutes % 60)
+        set(Calendar.SECOND, 59)
+        set(Calendar.MILLISECOND, 999)
+    }.timeInMillis
+}
+private fun TaskItem.isExpired(now: Long = System.currentTimeMillis()): Boolean = !completed && dueAtMillis()?.let { it < now } == true
+private fun TaskItem.dueDisplay(): String? = dueAtMillis()?.let(::formatTaskDateTime) ?: due.takeIf(String::isNotBlank)
 private fun JSONObject.optIntOrNull(key: String): Int? = if (!has(key) || isNull(key)) null else optInt(key).takeIf { it > 0 }
+private fun JSONObject.optLongOrNull(key: String): Long? = if (!has(key) || isNull(key)) null else optLong(key).takeIf { it > 0L }
 private fun JSONObject.optDoubleOrNull(key: String): Double? = if (!has(key) || isNull(key)) null else optDouble(key).takeIf { !it.isNaN() }
 private fun JSONObject.optStringList(key: String): List<String> = optJSONArray(key)?.let { array -> List(array.length()) { array.optString(it) }.filter(String::isNotBlank) } ?: emptyList()
 private fun ScheduleOption.toJson() = JSONObject().put("sessions", JSONArray().apply { sessions.forEach { put(JSONObject().put("day", it.day).put("start", it.start).put("end", it.end)) } })
