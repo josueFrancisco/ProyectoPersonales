@@ -73,7 +73,7 @@ import java.util.UUID
 data class WishItem(val id: String = UUID.randomUUID().toString(), val name: String, val description: String, val price: Double?, val store: String, val purchased: Boolean = false)
 data class TaskItem(val id: String = UUID.randomUUID().toString(), val title: String, val details: String, val due: String, val priority: String, val completed: Boolean = false, val dueDateMillis: Long? = null, val dueTime: String = "", val completedAtMillis: Long? = null)
 data class FavoriteItem(val id: String = UUID.randomUUID().toString(), val name: String, val category: String, val notes: String, val link: String)
-data class AnimeItem(val apiId: String, val title: String, val image: String, val episodes: Int?, val rating: Double?, val synopsis: String, val watchStatus: String = "Quiero verlo", val genres: List<String> = emptyList())
+data class AnimeItem(val apiId: String, val title: String, val image: String, val episodes: Int?, val rating: Double?, val synopsis: String, val watchStatus: String = "Quiero verlo", val genres: List<String> = emptyList(), val startDate: String = "")
 data class RelatedAnime(val role: String, val anime: AnimeItem)
 data class AnimeGenre(val id: String, val name: String, val slug: String = id)
 data class AnimeLibraryGroup(val main: AnimeItem, val seasons: List<AnimeItem>)
@@ -91,8 +91,8 @@ private class PersonalRepository(context: Context) {
     fun saveTasks(items: List<TaskItem>) = save("tasks", prefs, items) { task -> JSONObject().put("id", task.id).put("title", task.title).put("details", task.details).put("due", task.due).put("priority", task.priority).put("completed", task.completed).put("dueDateMillis", task.dueDateMillis ?: JSONObject.NULL).put("dueTime", task.dueTime).put("completedAtMillis", task.completedAtMillis ?: JSONObject.NULL) }
     fun loadFavorites(): List<FavoriteItem> = parse("favorites", prefs) { item -> FavoriteItem(item.getString("id"), item.getString("name"), item.optString("category"), item.optString("notes"), item.optString("link")) }
     fun saveFavorites(items: List<FavoriteItem>) = save("favorites", prefs, items) { favorite -> JSONObject().put("id", favorite.id).put("name", favorite.name).put("category", favorite.category).put("notes", favorite.notes).put("link", favorite.link) }
-    fun loadAnime(): List<AnimeItem> = parse("anime", prefs) { item -> AnimeItem(item.getString("apiId"), item.getString("title"), item.optString("image"), item.optIntOrNull("episodes"), item.optDoubleOrNull("rating"), item.optString("synopsis"), item.optString("watchStatus", "Quiero verlo"), item.optStringList("genres")) }
-    fun saveAnime(items: List<AnimeItem>) = save("anime", prefs, items) { anime -> JSONObject().put("apiId", anime.apiId).put("title", anime.title).put("image", anime.image).put("episodes", anime.episodes ?: JSONObject.NULL).put("rating", anime.rating ?: JSONObject.NULL).put("synopsis", anime.synopsis).put("watchStatus", anime.watchStatus).put("genres", JSONArray(anime.genres)) }
+    fun loadAnime(): List<AnimeItem> = parse("anime", prefs) { item -> AnimeItem(item.getString("apiId"), item.getString("title"), item.optString("image"), item.optIntOrNull("episodes"), item.optDoubleOrNull("rating"), item.optString("synopsis"), item.optString("watchStatus", "Quiero verlo"), item.optStringList("genres"), item.optString("startDate")) }
+    fun saveAnime(items: List<AnimeItem>) = save("anime", prefs, items) { anime -> JSONObject().put("apiId", anime.apiId).put("title", anime.title).put("image", anime.image).put("episodes", anime.episodes ?: JSONObject.NULL).put("rating", anime.rating ?: JSONObject.NULL).put("synopsis", anime.synopsis).put("watchStatus", anime.watchStatus).put("genres", JSONArray(anime.genres)).put("startDate", anime.startDate) }
     fun loadSubjects(): List<SubjectSchedule> = parse("subjects", prefs) { item -> SubjectSchedule(item.getString("id"), item.getString("name"), item.getJSONObject("optionA").toScheduleOption(), item.getJSONObject("optionB").toScheduleOption(), item.optInt("selectedOption")) }
     fun saveSubjects(items: List<SubjectSchedule>) = save("subjects", prefs, items) { subject -> JSONObject().put("id", subject.id).put("name", subject.name).put("optionA", subject.optionA.toJson()).put("optionB", subject.optionB.toJson()).put("selectedOption", subject.selectedOption) }
 
@@ -528,7 +528,7 @@ private object AnimeApi {
 
     suspend fun refreshGenres(items: List<AnimeItem>): List<AnimeItem> = withContext(Dispatchers.IO) {
         val refreshed = mutableMapOf<String, AnimeItem>()
-        items.filter { it.genres.isEmpty() }.chunked(20).forEach { chunk ->
+        items.filter { it.genres.isEmpty() || it.startDate.isBlank() }.chunked(20).forEach { chunk ->
             val ids = URLEncoder.encode(chunk.joinToString(",") { it.apiId }, "UTF-8")
             val connection = (URL("$ENDPOINT?filter%5Bid%5D=$ids&page%5Blimit%5D=20&include=categories").openConnection() as HttpURLConnection).apply { requestMethod = "GET"; setRequestProperty("Accept", "application/vnd.api+json"); connectTimeout = 12_000; readTimeout = 12_000 }
             try { if (connection.responseCode in 200..299) parseAnimeResponse(connection.inputStream.bufferedReader().use { it.readText() }).forEach { refreshed[it.apiId] = it } } finally { connection.disconnect() }
@@ -562,7 +562,7 @@ private object AnimeApi {
         val image = sequenceOf("large", "medium", "small", "original", "tiny").map { poster?.optString(it).orEmpty() }.firstOrNull { it.startsWith("http") }.orEmpty()
         val categoryData = item.optJSONObject("relationships")?.optJSONObject("categories")?.optJSONArray("data") ?: JSONArray()
         val genres = List(categoryData.length()) { categoryData.optJSONObject(it)?.optString("id").orEmpty() }.mapNotNull(categoryNames::get).distinct()
-        return AnimeItem(item.optString("id").ifBlank { "$title-$index" }, title, image, attributes.optIntOrNull("episodeCount"), attributes.optString("averageRating").toDoubleOrNull()?.div(10.0), attributes.optString("synopsis", attributes.optString("description")), genres = genres)
+        return AnimeItem(item.optString("id").ifBlank { "$title-$index" }, title, image, attributes.optIntOrNull("episodeCount"), attributes.optString("averageRating").toDoubleOrNull()?.div(10.0), attributes.optString("synopsis", attributes.optString("description")), genres = genres, startDate = attributes.optString("startDate"))
     }
 
     private fun relationshipOrder(role: String) = when (role) { "prequel" -> 0; "sequel" -> 1; "spinoff" -> 2; "side_story" -> 3; else -> 4 }
@@ -598,7 +598,7 @@ private fun AnimeScreen(items: List<AnimeItem>, padding: PaddingValues, onAdd: (
 
     if (libraryOpen) BackHandler { libraryOpen = false }
     LaunchedEffect(libraryOpen) {
-        if (libraryOpen && !genreSyncAttempted && items.any { it.genres.isEmpty() }) {
+        if (libraryOpen && !genreSyncAttempted && items.any { it.genres.isEmpty() || it.startDate.isBlank() }) {
             genreSyncAttempted = true
             runCatching { AnimeApi.refreshGenres(items) }.onSuccess(onSync)
         }
@@ -668,9 +668,12 @@ private fun AnimeScreen(items: List<AnimeItem>, padding: PaddingValues, onAdd: (
             }
         }
         if (results.isNotEmpty()) {
+            val resultGroups = groupAnimeByTitle(results)
             item(span = { GridItemSpan(maxLineSpan) }) { Text("Resultados", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp)) }
-            gridItems(results.take(20), key = { "result-${it.apiId}" }) { anime ->
-                AnimeResultCard(anime, alreadyAdded = items.any { it.apiId == anime.apiId }, onDetails = { selectedAnime = anime }) { onAdd(anime); results = results.filterNot { it.apiId == anime.apiId } }
+            gridItems(resultGroups.take(20), key = { "result-${it.main.apiId}" }) { group ->
+                AnimeResultCard(group, isSaved = { candidate -> items.any { it.apiId == candidate.apiId } }, onDetails = { selectedAnime = it }) { anime ->
+                    onAdd(anime); results = results.filterNot { it.apiId == anime.apiId }
+                }
             }
         } else if (query.isBlank() && resolveAnimeGenreFilter(genres, selectedGenre, genreQuery) == null) item(span = { GridItemSpan(maxLineSpan) }) { EmptyState("⌕", "Empieza a explorar", "Escribe al menos dos letras o selecciona un género.") }
     }
@@ -735,20 +738,37 @@ private fun AnimeArtwork(anime: AnimeItem, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun AnimeResultCard(anime: AnimeItem, alreadyAdded: Boolean, onDetails: () -> Unit, onAdd: () -> Unit) {
-    Card(Modifier.fillMaxWidth().clickable(onClick = onDetails), shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(2.dp)) {
+private fun AnimeResultCard(group: AnimeLibraryGroup, isSaved: (AnimeItem) -> Boolean, onDetails: (AnimeItem) -> Unit, onAdd: (AnimeItem) -> Unit) {
+    val anime = group.main
+    var expanded by rememberSaveable(group.main.apiId) { mutableStateOf(false) }
+    Card(Modifier.fillMaxWidth().clickable { if (group.seasons.size > 1) expanded = !expanded else onDetails(anime) }, shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(2.dp)) {
         Column {
             Box {
                 AnimeArtwork(anime, Modifier.fillMaxWidth().aspectRatio(0.72f))
                 Surface(Modifier.align(Alignment.TopEnd).padding(9.dp), shape = CircleShape, color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)) {
-                    Text(if (alreadyAdded) "↻" else "+", Modifier.clickable(onClick = onAdd).padding(horizontal = 11.dp, vertical = 7.dp), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                    Text(if (isSaved(anime)) "↻" else "+", Modifier.clickable(onClick = { onAdd(anime) }).padding(horizontal = 11.dp, vertical = 7.dp), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, fontSize = 17.sp)
                 }
             }
             Column(Modifier.padding(12.dp)) {
                 Text(anime.title, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, minLines = 2)
+                anime.rating?.let { Text("★ ${"%.1f".format(it)}", color = Color(0xFFE59A22), fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.padding(top = 7.dp)) }
+                if (group.seasons.size > 1) Text("${group.seasons.size} partes ${if (expanded) "⌃" else "⌄"}", color = MaterialTheme.colorScheme.tertiary, fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.padding(top = 7.dp))
                 if (anime.genres.isNotEmpty()) Row(Modifier.padding(top = 9.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                     anime.genres.forEach { genre -> AnimeGenrePill(genre) }
                 } else Text(anime.rating?.let { "★ ${"%.1f".format(it)}" } ?: "Ver detalles", color = MaterialTheme.colorScheme.primary, fontSize = 12.sp, modifier = Modifier.padding(top = 9.dp))
+                if (expanded) {
+                    HorizontalDivider(Modifier.padding(vertical = 10.dp), color = MaterialTheme.colorScheme.outlineVariant)
+                    group.seasons.forEach { season ->
+                        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { onDetails(season) }.padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                            AnimeArtwork(season, Modifier.size(width = 38.dp, height = 52.dp))
+                            Column(Modifier.weight(1f).padding(start = 9.dp)) {
+                                Text(season.title, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                season.rating?.let { Text("★ ${"%.1f".format(it)}", color = Color(0xFFE59A22), fontSize = 11.sp, modifier = Modifier.padding(top = 2.dp)) }
+                            }
+                            Text(if (isSaved(season)) "↻" else "+", Modifier.clickable { onAdd(season) }.padding(6.dp), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
             }
         }
     }
@@ -762,17 +782,8 @@ private fun AnimeLibraryOverview(items: List<AnimeItem>, allGenres: List<AnimeGe
     var selectedGenre by remember { mutableStateOf<AnimeGenre?>(null) }
     var genreQuery by rememberSaveable { mutableStateOf("") }
     var sortMode by rememberSaveable { mutableStateOf("Reciente") }
-    var relationsByAnime by remember { mutableStateOf<Map<String, Set<String>>>(emptyMap()) }
     val libraryGenres = remember(items, allGenres) {
         (allGenres + items.flatMap { it.genres }.map { AnimeGenre(it, it) }).distinctBy { it.name.lowercase() }.sortedBy { it.name.lowercase() }
-    }
-    LaunchedEffect(items.map { it.apiId }.sorted().joinToString(",")) {
-        val savedIds = items.map { it.apiId }.toSet()
-        val loaded = mutableMapOf<String, Set<String>>()
-        items.forEach { anime ->
-            loaded[anime.apiId] = runCatching { AnimeApi.related(anime.apiId).map { it.anime.apiId }.filter { it in savedIds }.toSet() }.getOrDefault(emptySet())
-        }
-        relationsByAnime = loaded
     }
     val filteredItems = remember(items, libraryQuery, selectedGenre, genreQuery) {
         val term = libraryQuery.trim()
@@ -782,9 +793,10 @@ private fun AnimeLibraryOverview(items: List<AnimeItem>, allGenres: List<AnimeGe
                 (typedGenre.isBlank() || anime.genres.any { it.contains(typedGenre, ignoreCase = true) || it.equals(selectedGenre?.name, ignoreCase = true) })
         }
     }
+    val filteredGroups = remember(filteredItems, sortMode) { sortAnimeGroups(groupAnimeByTitle(filteredItems), sortMode) }
     openStatus?.let { status ->
         val title = sections.firstOrNull { it.first == status }?.second ?: "Mi lista"
-        val groups = remember(filteredItems, relationsByAnime, sortMode, status) { sortAnimeGroups(groupSavedAnime(filteredItems.filter { it.watchStatus == status }, relationsByAnime), sortMode) }
+        val groups = filteredGroups.filter { it.main.watchStatus == status }
         BackHandler { openStatus = null }
         AnimeLibraryGrid(title, groups, padding, onBack = { openStatus = null }, onDetails = onDetails)
         return
@@ -818,7 +830,7 @@ private fun AnimeLibraryOverview(items: List<AnimeItem>, allGenres: List<AnimeGe
         if (items.isEmpty()) item { EmptyState("▷", "Tu lista está vacía", "Busca un anime y agrégalo para comenzar tu colección.") }
         else if (filteredItems.isEmpty()) item { EmptyState("⌕", "Sin coincidencias", "Prueba otro título o cambia el género seleccionado.") }
         sections.forEach { (status, title) ->
-            val sectionGroups = sortAnimeGroups(groupSavedAnime(filteredItems.filter { it.watchStatus == status }, relationsByAnime), sortMode)
+            val sectionGroups = filteredGroups.filter { it.main.watchStatus == status }
             if (filteredItems.isNotEmpty()) item(key = "section-$status") { AnimeLibraryShelf(title, sectionGroups, onOpen = { openStatus = status }, onDetails = onDetails) }
         }
     }
@@ -904,6 +916,15 @@ private fun AnimeGenrePill(text: String) {
 }
 
 @Composable
+private fun AnimeMetaLine(anime: AnimeItem, modifier: Modifier = Modifier) {
+    val facts = listOfNotNull(
+        anime.startDate.takeIf(String::isNotBlank)?.let { "Estreno ${formatAnimeDate(it)}" },
+        anime.rating?.let { "★ ${"%.1f".format(it)}" }
+    )
+    if (facts.isNotEmpty()) Text(facts.joinToString("  •  "), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = modifier.padding(top = 5.dp))
+}
+
+@Composable
 private fun AnimeLibraryCard(anime: AnimeItem, onDetails: () -> Unit, onStatus: (AnimeItem, String) -> Unit, onDelete: (AnimeItem) -> Unit) {
     var menu by remember { mutableStateOf(false) }
     Card(Modifier.fillMaxWidth().clickable(onClick = onDetails), shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(2.dp)) {
@@ -946,6 +967,7 @@ private fun AnimeDetailSheet(anime: AnimeItem, isSaved: Boolean, onDismiss: () -
                     Text(anime.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
                     if (isSaved) { Spacer(Modifier.height(12.dp)); AnimeStatusPill(anime.watchStatus) }
                     anime.rating?.let { Text("★  ${"%.1f".format(it)} / 10", color = Color(0xFFE59A22), fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 14.dp)) }
+                    if (anime.startDate.isNotBlank()) Text("Estreno: ${formatAnimeDate(anime.startDate)}", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 7.dp))
                     anime.episodes?.let { Text("$it episodios", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 7.dp)) }
                     if (anime.genres.isNotEmpty()) Column(Modifier.padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) { anime.genres.forEach { AnimeGenrePill(it) } }
                 }
@@ -1010,6 +1032,12 @@ private fun relationshipLabel(role: String) = when (role) {
     else -> "RELACIONADO"
 }
 
+private fun groupAnimeByTitle(items: List<AnimeItem>): List<AnimeLibraryGroup> =
+    items.groupBy { animeFranchiseKey(it.title) }.values.map { seasons ->
+        val ordered = seasons.distinctBy { it.apiId }.sortedWith(compareBy<AnimeItem> { seasonOrderHint(it.title) }.thenBy { it.startDate.ifBlank { "9999" } }.thenBy { it.title })
+        AnimeLibraryGroup(ordered.first(), ordered)
+    }
+
 private fun groupSavedAnime(items: List<AnimeItem>, relationsByAnime: Map<String, Set<String>>): List<AnimeLibraryGroup> {
     val byId = items.associateBy { it.apiId }
     val visited = mutableSetOf<String>()
@@ -1023,8 +1051,9 @@ private fun groupSavedAnime(items: List<AnimeItem>, relationsByAnime: Map<String
             component += anime
             val linkedIds = relationsByAnime[id].orEmpty() + relationsByAnime.filterValues { id in it }.keys
             linkedIds.filter { it in byId && visited.add(it) }.forEach(queue::add)
+            byId.values.filter { animeFranchiseKey(it.title) == animeFranchiseKey(anime.title) && visited.add(it.apiId) }.forEach { queue.add(it.apiId) }
         }
-        val seasons = component.distinctBy { it.apiId }.sortedWith(compareBy<AnimeItem> { seasonOrderHint(it.title) }.thenBy { it.title })
+        val seasons = component.distinctBy { it.apiId }.sortedWith(compareBy<AnimeItem> { seasonOrderHint(it.title) }.thenBy { it.startDate.ifBlank { "9999" } }.thenBy { it.title })
         AnimeLibraryGroup(seasons.first(), seasons)
     }
 }
@@ -1046,6 +1075,16 @@ private fun seasonOrderHint(title: String): Int {
         else -> 99
     }
 }
+
+private fun animeFranchiseKey(title: String): String = title.lowercase()
+    .replace(Regex("""\([^)]*\)"""), " ")
+    .replace(Regex("""\b(the movie|movie|ova|ona|special|tv)\b"""), " ")
+    .replace(Regex("""\b(season|temporada|part|cour)\s*\d+\b"""), " ")
+    .replace(Regex("""\b\d+(st|nd|rd|th)\s+season\b"""), " ")
+    .replace(Regex("""\b[0-9ivx]+\b"""), " ")
+    .replace(Regex("""[^a-z0-9]+"""), " ")
+    .trim()
+    .takeIf { it.length >= 4 } ?: title.lowercase().trim()
 
 @Composable
 private fun AnimeStatusPill(status: String) {
@@ -1127,6 +1166,10 @@ private fun FavoriteForm(existing: FavoriteItem?, onBack: () -> Unit, onSave: (F
 private fun formatPrice(price: Double?) = price?.let { NumberFormat.getCurrencyInstance(Locale.US).format(it) } ?: "Sin precio"
 private fun priorityOrder(priority: String) = when (priority) { "Alta" -> 0; "Media" -> 1; else -> 2 }
 private fun categorySymbol(category: String) = when { category.contains("música", true) || category.contains("musica", true) -> "♪"; category.contains("película", true) || category.contains("serie", true) -> "▶"; category.contains("lugar", true) || category.contains("viaje", true) -> "⌖"; category.contains("libro", true) -> "▤"; else -> "♡" }
+private fun formatAnimeDate(value: String): String = runCatching {
+    val parts = value.split("-")
+    if (parts.size >= 3) "${parts[2]}/${parts[1]}/${parts[0]}" else value
+}.getOrDefault(value)
 private fun formatTaskDate(millis: Long): String = SimpleDateFormat("dd MMM yyyy", Locale.forLanguageTag("es-ES")).format(Date(millis))
 private fun formatTaskDateTime(millis: Long): String = SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.forLanguageTag("es-ES")).format(Date(millis))
 private fun taskDueText(dateMillis: Long?, time: String): String = dateMillis?.let { "${formatTaskDate(it)}${time.takeIf(String::isNotBlank)?.let { hour -> " · $hour" } ?: ""}" }.orEmpty()
