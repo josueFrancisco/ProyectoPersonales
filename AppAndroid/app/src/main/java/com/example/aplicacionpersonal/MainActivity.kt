@@ -7,10 +7,13 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.pdf.PdfDocument
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
@@ -37,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.text.font.FontWeight
@@ -76,7 +80,8 @@ data class FavoriteItem(val id: String = UUID.randomUUID().toString(), val name:
 data class AnimeItem(val apiId: String, val title: String, val image: String, val episodes: Int?, val rating: Double?, val synopsis: String, val watchStatus: String = "Quiero verlo", val genres: List<String> = emptyList(), val startDate: String = "")
 data class RelatedAnime(val role: String, val anime: AnimeItem)
 data class AnimeGenre(val id: String, val name: String, val slug: String = id)
-data class AnimeLibraryGroup(val main: AnimeItem, val seasons: List<AnimeItem>)
+data class AnimeFolder(val id: String = UUID.randomUUID().toString(), val name: String, val animeIds: List<String> = emptyList())
+data class AnimeLibraryGroup(val main: AnimeItem, val seasons: List<AnimeItem>, val folderName: String? = null, val folderId: String? = null)
 data class ClassSession(val day: String, val start: String, val end: String)
 data class ScheduleOption(val sessions: List<ClassSession>)
 data class SubjectSchedule(val id: String = UUID.randomUUID().toString(), val name: String, val optionA: ScheduleOption, val optionB: ScheduleOption, val selectedOption: Int = 0)
@@ -93,8 +98,34 @@ private class PersonalRepository(context: Context) {
     fun saveFavorites(items: List<FavoriteItem>) = save("favorites", prefs, items) { favorite -> JSONObject().put("id", favorite.id).put("name", favorite.name).put("category", favorite.category).put("notes", favorite.notes).put("link", favorite.link) }
     fun loadAnime(): List<AnimeItem> = parse("anime", prefs) { item -> AnimeItem(item.getString("apiId"), item.getString("title"), item.optString("image"), item.optIntOrNull("episodes"), item.optDoubleOrNull("rating"), item.optString("synopsis"), item.optString("watchStatus", "Quiero verlo"), item.optStringList("genres"), item.optString("startDate")) }
     fun saveAnime(items: List<AnimeItem>) = save("anime", prefs, items) { anime -> JSONObject().put("apiId", anime.apiId).put("title", anime.title).put("image", anime.image).put("episodes", anime.episodes ?: JSONObject.NULL).put("rating", anime.rating ?: JSONObject.NULL).put("synopsis", anime.synopsis).put("watchStatus", anime.watchStatus).put("genres", JSONArray(anime.genres)).put("startDate", anime.startDate) }
+    fun loadAnimeFolders(): List<AnimeFolder> = parse("animeFolders", prefs) { item -> AnimeFolder(item.getString("id"), item.optString("name"), item.optStringList("animeIds")) }
+    fun saveAnimeFolders(items: List<AnimeFolder>) = save("animeFolders", prefs, items) { folder -> JSONObject().put("id", folder.id).put("name", folder.name).put("animeIds", JSONArray(folder.animeIds)) }
     fun loadSubjects(): List<SubjectSchedule> = parse("subjects", prefs) { item -> SubjectSchedule(item.getString("id"), item.getString("name"), item.getJSONObject("optionA").toScheduleOption(), item.getJSONObject("optionB").toScheduleOption(), item.optInt("selectedOption")) }
     fun saveSubjects(items: List<SubjectSchedule>) = save("subjects", prefs, items) { subject -> JSONObject().put("id", subject.id).put("name", subject.name).put("optionA", subject.optionA.toJson()).put("optionB", subject.optionB.toJson()).put("selectedOption", subject.selectedOption) }
+
+    fun exportBackupJson(): String = JSONObject()
+        .put("schemaVersion", 1)
+        .put("exportedAt", System.currentTimeMillis())
+        .put("wishes", JSONArray(wishesPrefs.getString("items", "[]")))
+        .put("tasks", JSONArray(prefs.getString("tasks", "[]")))
+        .put("favorites", JSONArray(prefs.getString("favorites", "[]")))
+        .put("anime", JSONArray(prefs.getString("anime", "[]")))
+        .put("animeFolders", JSONArray(prefs.getString("animeFolders", "[]")))
+        .put("subjects", JSONArray(prefs.getString("subjects", "[]")))
+        .toString(2)
+
+    fun importBackupJson(text: String) {
+        val root = JSONObject(text)
+        require(root.has("schemaVersion")) { "Archivo de respaldo no válido." }
+        wishesPrefs.edit().putString("items", root.optJSONArray("wishes")?.toString() ?: "[]").apply()
+        prefs.edit()
+            .putString("tasks", root.optJSONArray("tasks")?.toString() ?: "[]")
+            .putString("favorites", root.optJSONArray("favorites")?.toString() ?: "[]")
+            .putString("anime", root.optJSONArray("anime")?.toString() ?: "[]")
+            .putString("animeFolders", root.optJSONArray("animeFolders")?.toString() ?: "[]")
+            .putString("subjects", root.optJSONArray("subjects")?.toString() ?: "[]")
+            .apply()
+    }
 
     private fun <T> parse(key: String, storage: android.content.SharedPreferences, map: (JSONObject) -> T): List<T> = runCatching {
         val array = JSONArray(storage.getString(key, "[]")); List(array.length()) { map(array.getJSONObject(it)) }
@@ -116,17 +147,39 @@ private enum class Section(val title: String, val short: String) { WISHES("Compr
 
 @Composable
 private fun PersonalHub(repository: PersonalRepository) {
+    val context = LocalContext.current
     var section by rememberSaveable { mutableStateOf(Section.WISHES) }
     var wishes by remember { mutableStateOf(repository.loadWishes()) }
     var tasks by remember { mutableStateOf(repository.loadTasks()) }
     var favorites by remember { mutableStateOf(repository.loadFavorites()) }
     var anime by remember { mutableStateOf(repository.loadAnime()) }
+    var animeFolders by remember { mutableStateOf(repository.loadAnimeFolders()) }
     var subjects by remember { mutableStateOf(repository.loadSubjects()) }
     var editingWish by remember { mutableStateOf<WishItem?>(null) }
     var editingTask by remember { mutableStateOf<TaskItem?>(null) }
     var editingFavorite by remember { mutableStateOf<FavoriteItem?>(null) }
     var editingSubject by remember { mutableStateOf<SubjectSchedule?>(null) }
     var formOpen by rememberSaveable { mutableStateOf(false) }
+    fun reloadAll() {
+        wishes = repository.loadWishes()
+        tasks = repository.loadTasks()
+        favorites = repository.loadFavorites()
+        anime = repository.loadAnime()
+        animeFolders = repository.loadAnimeFolders()
+        subjects = repository.loadSubjects()
+    }
+    val backupImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: error("No se pudo abrir el archivo.")
+            repository.importBackupJson(text)
+            reloadAll()
+        }.onSuccess {
+            Toast.makeText(context, "Respaldo importado", Toast.LENGTH_SHORT).show()
+        }.onFailure {
+            Toast.makeText(context, it.message ?: "No se pudo importar el respaldo", Toast.LENGTH_LONG).show()
+        }
+    }
 
     if (formOpen) {
         BackHandler { formOpen = false }
@@ -157,7 +210,7 @@ private fun PersonalHub(repository: PersonalRepository) {
                 Section.WISHES -> WishesScreen(wishes, padding, onToggle = { target -> wishes = wishes.map { if (it.id == target.id) it.copy(purchased = !it.purchased) else it }; repository.saveWishes(wishes) }, onEdit = { editingWish = it; formOpen = true }, onDelete = { target -> wishes = wishes.filterNot { it.id == target.id }; repository.saveWishes(wishes) })
                 Section.TASKS -> TasksScreen(tasks, padding, onToggle = { target -> tasks = tasks.map { if (it.id == target.id) { val done = !it.completed; it.copy(completed = done, completedAtMillis = if (done) System.currentTimeMillis() else null) } else it }; repository.saveTasks(tasks) }, onEdit = { editingTask = it; formOpen = true }, onDelete = { target -> tasks = tasks.filterNot { it.id == target.id }; repository.saveTasks(tasks) })
                 Section.FAVORITES -> FavoritesScreen(favorites, padding, onEdit = { editingFavorite = it; formOpen = true }, onDelete = { target -> favorites = favorites.filterNot { it.id == target.id }; repository.saveFavorites(favorites) })
-                Section.ANIME -> AnimeScreen(anime, padding, onAdd = { result -> anime = if (anime.none { it.apiId == result.apiId }) anime + result else anime.map { saved -> if (saved.apiId == result.apiId) result.copy(watchStatus = saved.watchStatus) else saved }; repository.saveAnime(anime) }, onStatus = { target, status -> anime = anime.map { if (it.apiId == target.apiId) it.copy(watchStatus = status) else it }; repository.saveAnime(anime) }, onDelete = { target -> anime = anime.filterNot { it.apiId == target.apiId }; repository.saveAnime(anime) }, onSync = { refreshed -> anime = refreshed; repository.saveAnime(anime) })
+                Section.ANIME -> AnimeScreen(anime, animeFolders, padding, onAdd = { result -> anime = if (anime.none { it.apiId == result.apiId }) anime + result else anime.map { saved -> if (saved.apiId == result.apiId) result.copy(watchStatus = saved.watchStatus) else saved }; repository.saveAnime(anime) }, onStatus = { target, status -> anime = anime.map { if (it.apiId == target.apiId) it.copy(watchStatus = status) else it }; repository.saveAnime(anime) }, onDelete = { target -> anime = anime.filterNot { it.apiId == target.apiId }; animeFolders = animeFolders.map { it.copy(animeIds = it.animeIds - target.apiId) }; repository.saveAnime(anime); repository.saveAnimeFolders(animeFolders) }, onSync = { refreshed -> anime = refreshed; repository.saveAnime(anime) }, onFoldersChange = { updated -> animeFolders = updated; repository.saveAnimeFolders(updated) }, onExportBackup = { shareBackup(context, repository.exportBackupJson()) }, onImportBackup = { backupImportLauncher.launch(arrayOf("application/json", "text/*", "*/*")) })
                 Section.SCHEDULE -> ScheduleScreen(subjects, padding, onSelect = { target, selected -> subjects = subjects.map { if (it.id == target.id) it.copy(selectedOption = selected) else it }; repository.saveSubjects(subjects) }, onEdit = { editingSubject = it; formOpen = true }, onDelete = { target -> subjects = subjects.filterNot { it.id == target.id }; repository.saveSubjects(subjects) })
             }
         }
@@ -581,7 +634,7 @@ private object AnimeTranslator {
 }
 
 @Composable
-private fun AnimeScreen(items: List<AnimeItem>, padding: PaddingValues, onAdd: (AnimeItem) -> Unit, onStatus: (AnimeItem, String) -> Unit, onDelete: (AnimeItem) -> Unit, onSync: (List<AnimeItem>) -> Unit) {
+private fun AnimeScreen(items: List<AnimeItem>, folders: List<AnimeFolder>, padding: PaddingValues, onAdd: (AnimeItem) -> Unit, onStatus: (AnimeItem, String) -> Unit, onDelete: (AnimeItem) -> Unit, onSync: (List<AnimeItem>) -> Unit, onFoldersChange: (List<AnimeFolder>) -> Unit, onExportBackup: () -> Unit, onImportBackup: () -> Unit) {
     var query by rememberSaveable { mutableStateOf("") }
     var results by remember { mutableStateOf<List<AnimeItem>>(emptyList()) }
     var searching by remember { mutableStateOf(false) }
@@ -609,10 +662,17 @@ private fun AnimeScreen(items: List<AnimeItem>, padding: PaddingValues, onAdd: (
         AnimeDetailSheet(
             anime = saved ?: selected,
             isSaved = saved != null,
+            folders = folders,
             onDismiss = { selectedAnime = null },
             onAdd = { onAdd(selected); selectedAnime = null },
             onStatus = { status -> onStatus(saved ?: selected, status) },
             onDelete = { onDelete(saved ?: selected); selectedAnime = null },
+            onToggleFolder = { folder ->
+                val target = saved ?: selected
+                onFoldersChange(folders.map { current ->
+                    if (current.id == folder.id) current.copy(animeIds = if (target.apiId in current.animeIds) current.animeIds - target.apiId else current.animeIds + target.apiId) else current
+                })
+            },
             onSelectRelated = { selectedAnime = it }
         )
     }
@@ -643,7 +703,7 @@ private fun AnimeScreen(items: List<AnimeItem>, padding: PaddingValues, onAdd: (
     }
 
     if (libraryOpen) {
-        AnimeLibraryOverview(items, genres, padding, onBack = { libraryOpen = false }, onDetails = { selectedAnime = it })
+        AnimeLibraryOverview(items, folders, genres, padding, onBack = { libraryOpen = false }, onDetails = { selectedAnime = it }, onFoldersChange = onFoldersChange, onExportBackup = onExportBackup, onImportBackup = onImportBackup)
         return
     }
 
@@ -775,13 +835,15 @@ private fun AnimeResultCard(group: AnimeLibraryGroup, isSaved: (AnimeItem) -> Bo
 }
 
 @Composable
-private fun AnimeLibraryOverview(items: List<AnimeItem>, allGenres: List<AnimeGenre>, padding: PaddingValues, onBack: () -> Unit, onDetails: (AnimeItem) -> Unit) {
+private fun AnimeLibraryOverview(items: List<AnimeItem>, folders: List<AnimeFolder>, allGenres: List<AnimeGenre>, padding: PaddingValues, onBack: () -> Unit, onDetails: (AnimeItem) -> Unit, onFoldersChange: (List<AnimeFolder>) -> Unit, onExportBackup: () -> Unit, onImportBackup: () -> Unit) {
     val sections = listOf("Ya lo vi" to "Animes vistos", "Quiero verlo" to "Animes que quiero ver", "Viendo" to "Animes viendo")
     var openStatus by rememberSaveable { mutableStateOf<String?>(null) }
     var libraryQuery by rememberSaveable { mutableStateOf("") }
     var selectedGenre by remember { mutableStateOf<AnimeGenre?>(null) }
     var genreQuery by rememberSaveable { mutableStateOf("") }
     var sortMode by rememberSaveable { mutableStateOf("Reciente") }
+    var folderDialog by rememberSaveable { mutableStateOf(false) }
+    var folderName by rememberSaveable { mutableStateOf("") }
     val libraryGenres = remember(items, allGenres) {
         (allGenres + items.flatMap { it.genres }.map { AnimeGenre(it, it) }).distinctBy { it.name.lowercase() }.sortedBy { it.name.lowercase() }
     }
@@ -793,12 +855,21 @@ private fun AnimeLibraryOverview(items: List<AnimeItem>, allGenres: List<AnimeGe
                 (typedGenre.isBlank() || anime.genres.any { it.contains(typedGenre, ignoreCase = true) || it.equals(selectedGenre?.name, ignoreCase = true) })
         }
     }
-    val filteredGroups = remember(filteredItems, sortMode) { sortAnimeGroups(groupAnimeByTitle(filteredItems), sortMode) }
+    val filteredGroups = remember(filteredItems, folders, sortMode) { sortAnimeGroups(groupAnimeWithFolders(filteredItems, folders), sortMode) }
+    if (folderDialog) {
+        AlertDialog(
+            onDismissRequest = { folderDialog = false },
+            confirmButton = { TextButton({ if (folderName.isNotBlank()) { onFoldersChange(folders + AnimeFolder(name = folderName.trim())); folderName = ""; folderDialog = false } }) { Text("Crear") } },
+            dismissButton = { TextButton({ folderDialog = false }) { Text("Cancelar") } },
+            title = { Text("Nueva carpeta") },
+            text = { OutlinedTextField(folderName, { folderName = it }, label = { Text("Nombre") }, singleLine = true, shape = RoundedCornerShape(16.dp)) }
+        )
+    }
     openStatus?.let { status ->
         val title = sections.firstOrNull { it.first == status }?.second ?: "Mi lista"
         val groups = filteredGroups.filter { it.main.watchStatus == status }
         BackHandler { openStatus = null }
-        AnimeLibraryGrid(title, groups, padding, onBack = { openStatus = null }, onDetails = onDetails)
+        AnimeLibraryGrid(title, groups, filteredItems, folders, padding, onBack = { openStatus = null }, onDetails = onDetails, onFoldersChange = onFoldersChange)
         return
     }
     LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(20.dp, 18.dp, 20.dp, 112.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
@@ -814,6 +885,11 @@ private fun AnimeLibraryOverview(items: List<AnimeItem>, allGenres: List<AnimeGe
         }
         item {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedButton(onImportBackup, Modifier.weight(1f), shape = RoundedCornerShape(15.dp)) { Text("Importar", fontSize = 12.sp) }
+                    Button(onExportBackup, Modifier.weight(1f), shape = RoundedCornerShape(15.dp)) { Text("Exportar respaldo", fontSize = 12.sp) }
+                }
+                OutlinedButton({ folderDialog = true }, Modifier.fillMaxWidth(), shape = RoundedCornerShape(15.dp)) { Text("+ Crear carpeta manual", fontWeight = FontWeight.Bold) }
                 OutlinedTextField(
                     libraryQuery, { libraryQuery = it }, Modifier.fillMaxWidth(), placeholder = { Text("Buscar en mi lista") },
                     leadingIcon = { Text("⌕", fontSize = 23.sp) },
@@ -850,7 +926,7 @@ private fun AnimeLibraryShelf(title: String, groups: List<AnimeLibraryGroup>, on
                     val anime = group.main
                     Column(Modifier.width(104.dp).clickable { onDetails(anime) }) {
                         AnimeArtwork(anime, Modifier.fillMaxWidth().height(142.dp))
-                        Text(anime.title, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 7.dp))
+                        Text(group.folderName ?: anime.title, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 7.dp))
                         if (group.seasons.size > 1) Text("${group.seasons.size} partes", color = MaterialTheme.colorScheme.tertiary, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 3.dp))
                         if (anime.genres.isNotEmpty()) Text(anime.genres.joinToString(" • "), color = MaterialTheme.colorScheme.primary, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
                     }
@@ -862,7 +938,7 @@ private fun AnimeLibraryShelf(title: String, groups: List<AnimeLibraryGroup>, on
 }
 
 @Composable
-private fun AnimeLibraryGrid(title: String, groups: List<AnimeLibraryGroup>, padding: PaddingValues, onBack: () -> Unit, onDetails: (AnimeItem) -> Unit) {
+private fun AnimeLibraryGrid(title: String, groups: List<AnimeLibraryGroup>, allItems: List<AnimeItem>, folders: List<AnimeFolder>, padding: PaddingValues, onBack: () -> Unit, onDetails: (AnimeItem) -> Unit, onFoldersChange: (List<AnimeFolder>) -> Unit) {
     LazyVerticalGrid(columns = GridCells.Fixed(2), modifier = Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(20.dp, 18.dp, 20.dp, 112.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item(span = { GridItemSpan(maxLineSpan) }) {
             Row(Modifier.fillMaxWidth().padding(bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -874,25 +950,29 @@ private fun AnimeLibraryGrid(title: String, groups: List<AnimeLibraryGroup>, pad
                 Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) { Text(groups.size.toString(), Modifier.padding(horizontal = 13.dp, vertical = 8.dp), fontWeight = FontWeight.Bold) }
             }
         }
-        gridItems(groups, key = { "library-grid-${it.main.apiId}" }) { group -> AnimeSavedGridCard(group, onDetails) }
+        gridItems(groups, key = { "library-grid-${it.folderId ?: it.main.apiId}" }) { group -> AnimeSavedGridCard(group, allItems, folders, onDetails, onFoldersChange) }
     }
 }
 
 @Composable
-private fun AnimeSavedGridCard(group: AnimeLibraryGroup, onDetails: (AnimeItem) -> Unit) {
+private fun AnimeSavedGridCard(group: AnimeLibraryGroup, allItems: List<AnimeItem>, folders: List<AnimeFolder>, onDetails: (AnimeItem) -> Unit, onFoldersChange: (List<AnimeFolder>) -> Unit) {
     val anime = group.main
     var expanded by rememberSaveable(group.main.apiId) { mutableStateOf(false) }
+    var manageFolder by rememberSaveable(group.folderId) { mutableStateOf(false) }
+    val folder = folders.firstOrNull { it.id == group.folderId }
+    if (manageFolder && folder != null) AnimeFolderManagerDialog(folder, allItems, folders, onDismiss = { manageFolder = false }, onFoldersChange = onFoldersChange)
     Card(Modifier.fillMaxWidth().clickable { if (group.seasons.size > 1) expanded = !expanded else onDetails(anime) }, shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(2.dp)) {
         Column {
             AnimeArtwork(anime, Modifier.fillMaxWidth().aspectRatio(0.72f))
             Column(Modifier.padding(12.dp)) {
-                Text(anime.title, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, minLines = 2)
+                Text(group.folderName ?: anime.title, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, minLines = 2)
                 Spacer(Modifier.height(8.dp)); AnimeStatusPill(anime.watchStatus)
                 Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     anime.rating?.let { Text("★ ${"%.1f".format(it)}", color = Color(0xFFE59A22), fontWeight = FontWeight.Bold, fontSize = 12.sp) }
                     if (group.seasons.size > 1) Text("${group.seasons.size} partes ${if (expanded) "⌃" else "⌄"}", color = MaterialTheme.colorScheme.tertiary, fontWeight = FontWeight.Bold, fontSize = 11.sp)
                 }
                 if (anime.genres.isNotEmpty()) Row(Modifier.padding(top = 8.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) { anime.genres.forEach { AnimeGenrePill(it) } }
+                if (folder != null) TextButton({ manageFolder = true }, Modifier.fillMaxWidth().padding(top = 6.dp)) { Text("Gestionar carpeta", fontWeight = FontWeight.Bold) }
                 if (expanded) {
                     HorizontalDivider(Modifier.padding(vertical = 10.dp), color = MaterialTheme.colorScheme.outlineVariant)
                     group.seasons.forEach { season ->
@@ -913,6 +993,38 @@ private fun AnimeSavedGridCard(group: AnimeLibraryGroup, onDetails: (AnimeItem) 
 @Composable
 private fun AnimeGenrePill(text: String) {
     Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.primaryContainer) { Text(text, Modifier.padding(horizontal = 7.dp, vertical = 4.dp), color = MaterialTheme.colorScheme.onPrimaryContainer, fontSize = 10.sp, fontWeight = FontWeight.SemiBold, maxLines = 1) }
+}
+
+@Composable
+private fun AnimeFolderManagerDialog(folder: AnimeFolder, allItems: List<AnimeItem>, folders: List<AnimeFolder>, onDismiss: () -> Unit, onFoldersChange: (List<AnimeFolder>) -> Unit) {
+    var query by rememberSaveable(folder.id) { mutableStateOf("") }
+    val visible = remember(allItems, query) { allItems.filter { query.isBlank() || it.title.contains(query, ignoreCase = true) } }
+    fun updateFolder(nextIds: List<String>) = onFoldersChange(folders.map { if (it.id == folder.id) it.copy(animeIds = nextIds.distinct()) else it })
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onDismiss) { Text("Listo") } },
+        dismissButton = { TextButton({ onFoldersChange(folders.filterNot { it.id == folder.id }); onDismiss() }) { Text("Eliminar carpeta", color = MaterialTheme.colorScheme.error) } },
+        title = { Text(folder.name) },
+        text = {
+            Column {
+                OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), placeholder = { Text("Buscar anime guardado") }, leadingIcon = { Text("⌕", fontSize = 20.sp) }, singleLine = true, shape = RoundedCornerShape(16.dp))
+                Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()).padding(top = 12.dp)) {
+                    if (visible.isEmpty()) Text("No hay animes guardados con ese nombre.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                    visible.forEach { anime ->
+                        val checked = anime.apiId in folder.animeIds
+                        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { updateFolder(if (checked) folder.animeIds - anime.apiId else folder.animeIds + anime.apiId) }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked, { value -> updateFolder(if (value) folder.animeIds + anime.apiId else folder.animeIds - anime.apiId) })
+                            AnimeArtwork(anime, Modifier.size(width = 34.dp, height = 46.dp))
+                            Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                                Text(anime.title, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                Text(anime.watchStatus, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, modifier = Modifier.padding(top = 2.dp))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    )
 }
 
 @Composable
@@ -943,7 +1055,7 @@ private fun AnimeLibraryCard(anime: AnimeItem, onDetails: () -> Unit, onStatus: 
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AnimeDetailSheet(anime: AnimeItem, isSaved: Boolean, onDismiss: () -> Unit, onAdd: () -> Unit, onStatus: (String) -> Unit, onDelete: () -> Unit, onSelectRelated: (AnimeItem) -> Unit) {
+private fun AnimeDetailSheet(anime: AnimeItem, isSaved: Boolean, folders: List<AnimeFolder>, onDismiss: () -> Unit, onAdd: () -> Unit, onStatus: (String) -> Unit, onDelete: () -> Unit, onToggleFolder: (AnimeFolder) -> Unit, onSelectRelated: (AnimeItem) -> Unit) {
     var translatedSynopsis by remember(anime.apiId) { mutableStateOf<String?>(null) }
     var translationFailed by remember(anime.apiId) { mutableStateOf(false) }
     var related by remember(anime.apiId) { mutableStateOf<List<RelatedAnime>>(emptyList()) }
@@ -999,6 +1111,11 @@ private fun AnimeDetailSheet(anime: AnimeItem, isSaved: Boolean, onDismiss: () -
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("Quiero verlo", "Viendo", "Ya lo vi").forEach { status -> FilterChip(anime.watchStatus == status, { onStatus(status) }, { Text(status) }) }
                 }
+                Text("Carpetas", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 22.dp, bottom = 10.dp))
+                if (folders.isEmpty()) Text("Crea una carpeta desde Mi lista para agrupar temporadas o películas manualmente.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                else Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    folders.forEach { folder -> FilterChip(anime.apiId in folder.animeIds, { onToggleFolder(folder) }, { Text(folder.name) }, shape = RoundedCornerShape(14.dp)) }
+                }
                 OutlinedButton(onDelete, Modifier.fillMaxWidth().padding(top = 22.dp).height(52.dp), shape = RoundedCornerShape(16.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Eliminar de mi lista") }
             } else {
                 Button(onAdd, Modifier.fillMaxWidth().padding(top = 24.dp).height(54.dp), shape = RoundedCornerShape(17.dp)) { Text("+  Agregar a mi lista", fontWeight = FontWeight.Bold) }
@@ -1037,6 +1154,20 @@ private fun groupAnimeByTitle(items: List<AnimeItem>): List<AnimeLibraryGroup> =
         val ordered = seasons.distinctBy { it.apiId }.sortedWith(compareBy<AnimeItem> { seasonOrderHint(it.title) }.thenBy { it.startDate.ifBlank { "9999" } }.thenBy { it.title })
         AnimeLibraryGroup(ordered.first(), ordered)
     }
+
+private fun groupAnimeWithFolders(items: List<AnimeItem>, folders: List<AnimeFolder>): List<AnimeLibraryGroup> {
+    val byId = items.associateBy { it.apiId }
+    val groupedIds = mutableSetOf<String>()
+    val manualGroups = folders.mapNotNull { folder ->
+        val seasons = folder.animeIds.mapNotNull(byId::get).distinctBy { it.apiId }
+            .sortedWith(compareBy<AnimeItem> { seasonOrderHint(it.title) }.thenBy { it.startDate.ifBlank { "9999" } }.thenBy { it.title })
+        if (seasons.isEmpty()) null else {
+            groupedIds += seasons.map { it.apiId }
+            AnimeLibraryGroup(seasons.first(), seasons, folder.name, folder.id)
+        }
+    }
+    return manualGroups + groupAnimeByTitle(items.filterNot { it.apiId in groupedIds })
+}
 
 private fun groupSavedAnime(items: List<AnimeItem>, relationsByAnime: Map<String, Set<String>>): List<AnimeLibraryGroup> {
     val byId = items.associateBy { it.apiId }
@@ -1232,6 +1363,24 @@ private fun shareSchedule(context: Context, items: List<SubjectSchedule>, asPdf:
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
         val intent = Intent(Intent.ACTION_SEND).apply { type = if (asPdf) "application/pdf" else "image/png"; putExtra(Intent.EXTRA_STREAM, uri); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }
         context.startActivity(Intent.createChooser(intent, if (asPdf) "Compartir horario en PDF" else "Compartir horario como imagen"))
+    }
+}
+
+private fun shareBackup(context: Context, json: String) {
+    runCatching {
+        val directory = File(context.cacheDir, "exports").apply { mkdirs() }
+        val file = File(directory, "respaldo-personal-${System.currentTimeMillis()}.json")
+        file.writeText(json)
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "application/json"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, "Respaldo de mi app personal")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(intent, "Compartir respaldo"))
+    }.onFailure {
+        Toast.makeText(context, it.message ?: "No se pudo exportar el respaldo", Toast.LENGTH_LONG).show()
     }
 }
 
