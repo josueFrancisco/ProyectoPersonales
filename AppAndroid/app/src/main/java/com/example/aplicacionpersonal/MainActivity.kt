@@ -2020,30 +2020,88 @@ private fun AnimeScreen(
         }
     }
 
-    selectedFolder?.let { folder ->
+    if (libraryOpen) {
 
-        AnimeFolderScreen(
+        selectedFolder?.let { folder ->
 
-            folder = folder,
+            AnimeFolderScreen(
+                folder = folder,
+                allItems = items,
+                onBack = {
+                    selectedFolder = null
+                },
+                onAnimeClick = {
+                    selectedAnime = it
+                },
+                onManageFolder = {
+                    // luego lo usamos
+                }
+            )
 
-            allItems = items,
+        } ?: run {
 
-            onBack = {
-                selectedFolder = null
-            },
+            AnimeLibraryOverview(
+                items = items,
+                folders = folders,
+                allGenres = genres,
+                padding = padding,
+                onBack = { libraryOpen = false },
+                onDetails = { selectedAnime = it },
+                onOpenFolder = {
+                    selectedFolder = it
+                },
+                onFoldersChange = onFoldersChange,
+                onExportBackup = onExportBackup,
+                onImportBackup = onImportBackup
+            )
 
-            onAnimeClick = {
-                selectedAnime = it
-            },
+        }
 
-            onManageFolder = {
-                // aquí después abriremos el administrador
-            }
+        selectedAnime?.let { selected ->
 
-        )
+            val saved = items.firstOrNull { it.apiId == selected.apiId }
+
+            AnimeDetailSheet(
+                anime = saved ?: selected,
+                isSaved = saved != null,
+                folders = folders,
+                onDismiss = {
+                    selectedAnime = null
+                },
+                onAdd = {
+                    onAdd(selected)
+                    selectedAnime = null
+                },
+                onStatus = { status ->
+                    onStatus(saved ?: selected, status)
+                },
+                onDelete = {
+                    onDelete(saved ?: selected)
+                    selectedAnime = null
+                },
+                onToggleFolder = { folder ->
+                    val target = saved ?: selected
+                    onFoldersChange(
+                        folders.map { current ->
+                            if (current.id == folder.id)
+                                current.copy(
+                                    animeIds =
+                                        if (target.apiId in current.animeIds)
+                                            current.animeIds - target.apiId
+                                        else
+                                            current.animeIds + target.apiId
+                                )
+                            else current
+                        }
+                    )
+                },
+                onSelectRelated = {
+                    selectedAnime = it
+                }
+            )
+        }
 
         return
-
     }
 
     selectedAnime?.let { selected ->
