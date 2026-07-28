@@ -35,6 +35,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -2003,6 +2006,9 @@ private fun AnimeScreen(
     var selectedGenre by remember { mutableStateOf<AnimeGenre?>(null) }
     var genreQuery by rememberSaveable { mutableStateOf("") }
     val scope = rememberCoroutineScope()
+    var selectedFolder by remember {
+        mutableStateOf<AnimeFolder?>(null)
+    }
 
     LaunchedEffect(Unit) { runCatching { AnimeApi.genres() }.onSuccess { genres = it } }
 
@@ -2012,6 +2018,32 @@ private fun AnimeScreen(
             genreSyncAttempted = true
             runCatching { AnimeApi.refreshGenres(items) }.onSuccess(onSync)
         }
+    }
+
+    selectedFolder?.let { folder ->
+
+        AnimeFolderScreen(
+
+            folder = folder,
+
+            allItems = items,
+
+            onBack = {
+                selectedFolder = null
+            },
+
+            onAnimeClick = {
+                selectedAnime = it
+            },
+
+            onManageFolder = {
+                // aquí después abriremos el administrador
+            }
+
+        )
+
+        return
+
     }
 
     selectedAnime?.let { selected ->
@@ -2079,6 +2111,9 @@ private fun AnimeScreen(
             padding,
             onBack = { libraryOpen = false },
             onDetails = { selectedAnime = it },
+            onOpenFolder = {
+                selectedFolder = it
+            },
             onFoldersChange = onFoldersChange,
             onExportBackup = onExportBackup,
             onImportBackup = onImportBackup
@@ -2306,6 +2341,170 @@ private fun AnimeGenreSelector(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AnimeFolderScreen(
+    folder: AnimeFolder,
+    allItems: List<AnimeItem>,
+    onBack: () -> Unit,
+    onAnimeClick: (AnimeItem) -> Unit,
+    onManageFolder: () -> Unit
+) {
+
+    val animeList = allItems.filter {
+        it.apiId in folder.animeIds
+    }
+
+    Scaffold(
+
+        topBar = {
+
+            TopAppBar(
+
+                title = {
+                    Text(folder.name)
+                },
+
+                navigationIcon = {
+
+                    IconButton(onClick = onBack) {
+                        Icon(
+                            Icons.Default.ArrowBack,
+                            contentDescription = "Volver"
+                        )
+                    }
+
+                }
+
+            )
+
+        }
+
+    ) { padding ->
+
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
+
+            item {
+
+                Text(
+                    "Estado: ${folder.status}",
+                    modifier = Modifier.padding(16.dp),
+                    style = MaterialTheme.typography.titleMedium
+                )
+
+                Text(
+                    "${animeList.size} animes",
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                )
+
+                Spacer(Modifier.height(16.dp))
+
+            }
+
+            items(
+                animeList,
+                key = { it.apiId }
+            ) { anime ->
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                        .clickable {
+                            onAnimeClick(anime)
+                        },
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    )
+                ) {
+
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+
+                        AnimeArtwork(
+                            anime = anime,
+                            modifier = Modifier
+                                .width(82.dp)
+                                .height(118.dp)
+                        )
+
+                        Spacer(Modifier.width(14.dp))
+
+                        Column(
+                            modifier = Modifier.weight(1f)
+                        ) {
+
+                            Text(
+                                text = anime.title,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+
+                            Spacer(Modifier.height(6.dp))
+
+                            anime.rating?.let {
+
+                                Text(
+                                    text = "★ ${"%.1f".format(it)}",
+                                    color = Color(0xFFE59A22),
+                                    fontWeight = FontWeight.Bold
+                                )
+
+                                Spacer(Modifier.height(6.dp))
+                            }
+
+                            if (anime.genres.isNotEmpty()) {
+
+                                Row(
+                                    modifier = Modifier.horizontalScroll(
+                                        rememberScrollState()
+                                    ),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+
+                                    anime.genres.forEach {
+
+                                        AnimeGenrePill(it)
+
+                                    }
+
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            item {
+
+                Button(
+                    onClick = onManageFolder,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp)
+                ) {
+
+                    Text("Gestionar carpeta")
+
+                }
+
+            }
+
+        }
+
+    }
+
+}
+
 @Composable
 private fun AnimeArtwork(anime: AnimeItem, modifier: Modifier = Modifier) {
     Surface(
@@ -2463,6 +2662,7 @@ private fun AnimeLibraryOverview(
     padding: PaddingValues,
     onBack: () -> Unit,
     onDetails: (AnimeItem) -> Unit,
+    onOpenFolder: (AnimeFolder) -> Unit,
     onFoldersChange: (List<AnimeFolder>) -> Unit,
     onExportBackup: () -> Unit,
     onImportBackup: () -> Unit
@@ -2576,13 +2776,14 @@ private fun AnimeLibraryOverview(
         }
         BackHandler { openStatus = null }
         AnimeLibraryGrid(
-            title,
-            groups,
-            filteredItems,
-            folders,
-            padding,
+            title = title,
+            groups = groups,
+            allItems = filteredItems,
+            folders = folders,
+            padding = padding,
             onBack = { openStatus = null },
             onDetails = onDetails,
+            onOpenFolder = onOpenFolder,
             onFoldersChange = onFoldersChange
         )
         return
@@ -2827,6 +3028,7 @@ private fun AnimeLibraryGrid(
     padding: PaddingValues,
     onBack: () -> Unit,
     onDetails: (AnimeItem) -> Unit,
+    onOpenFolder: (AnimeFolder) -> Unit,
     onFoldersChange: (List<AnimeFolder>) -> Unit
 ) {
     LazyVerticalGrid(
@@ -2883,11 +3085,12 @@ private fun AnimeLibraryGrid(
             groups,
             key = { "library-grid-${it.folderId ?: it.main.apiId}" }) { group ->
             AnimeSavedGridCard(
-                group,
-                allItems,
-                folders,
-                onDetails,
-                onFoldersChange
+                group = group,
+                allItems = allItems,
+                folders = folders,
+                onDetails = onDetails,
+                onOpenFolder = onOpenFolder,
+                onFoldersChange = onFoldersChange
             )
         }
     }
@@ -2899,6 +3102,7 @@ private fun AnimeSavedGridCard(
     allItems: List<AnimeItem>,
     folders: List<AnimeFolder>,
     onDetails: (AnimeItem) -> Unit,
+    onOpenFolder: (AnimeFolder) -> Unit,
     onFoldersChange: (List<AnimeFolder>) -> Unit
 ) {
     val anime = group.main
@@ -2918,21 +3122,31 @@ private fun AnimeSavedGridCard(
     }
 
     if (group.isFolder) {
+
         FolderCard(
             group = group,
+
+            onClick = {
+
+                folder?.let {
+
+                    onOpenFolder(it)
+
+                }
+
+            },
+
             onManage = {
+
                 manageFolder = true
+
             }
+
         )
+
         return
+
     }
-    if (manageFolder && folder != null) AnimeFolderManagerDialog(
-        folder,
-        allItems,
-        folders,
-        onDismiss = { manageFolder = false },
-        onFoldersChange = onFoldersChange
-    )
     Card(
         Modifier
             .fillMaxWidth()
@@ -3032,10 +3246,13 @@ private fun AnimeSavedGridCard(
 @Composable
 private fun FolderCard(
     group: AnimeLibraryGroup,
+    onClick: () -> Unit,
     onManage: () -> Unit
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().clickable {
+            onClick()
+        },
         shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
