@@ -38,6 +38,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -124,7 +125,8 @@ data class AnimeFolder(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
     val status: String = "Quiero verlo",
-    val animeIds: List<String> = emptyList()
+    val animeIds: List<String> = emptyList(),
+    val lastModified: Long = System.currentTimeMillis()
 )
 
 data class AnimeLibraryGroup(
@@ -2009,6 +2011,21 @@ private fun AnimeScreen(
     var selectedFolder by remember {
         mutableStateOf<AnimeFolder?>(null)
     }
+    var showManageDialog by rememberSaveable {
+        mutableStateOf(false)
+    }
+
+    var showRenameDialog by rememberSaveable {
+        mutableStateOf(false)
+    }
+
+    var showStatusDialog by rememberSaveable {
+        mutableStateOf(false)
+    }
+
+    var showDeleteDialog by rememberSaveable {
+        mutableStateOf(false)
+    }
 
     LaunchedEffect(Unit) { runCatching { AnimeApi.genres() }.onSuccess { genres = it } }
 
@@ -2030,11 +2047,24 @@ private fun AnimeScreen(
                 onBack = {
                     selectedFolder = null
                 },
+
                 onAnimeClick = {
                     selectedAnime = it
                 },
+
+
                 onManageFolder = {
-                    // luego lo usamos
+                    showManageDialog = true
+                }
+                ,
+                onRenameFolder = {
+                    showRenameDialog = true
+                },
+                onChangeStatus = {
+                    showStatusDialog = true
+                },
+                onDeleteFolder = {
+                    showDeleteDialog = true
                 }
             )
 
@@ -2160,25 +2190,7 @@ private fun AnimeScreen(
             runSearch(requestedQuery, selectedGenre, genreQuery)
         }
     }
-
-    if (libraryOpen) {
-        AnimeLibraryOverview(
-            items,
-            folders,
-            genres,
-            padding,
-            onBack = { libraryOpen = false },
-            onDetails = { selectedAnime = it },
-            onOpenFolder = {
-                selectedFolder = it
-            },
-            onFoldersChange = onFoldersChange,
-            onExportBackup = onExportBackup,
-            onImportBackup = onImportBackup
-        )
-        return
-    }
-
+    
     LazyVerticalGrid(
         columns = GridCells.Fixed(2),
         modifier = Modifier
@@ -2398,17 +2410,33 @@ private fun AnimeGenreSelector(
         }
     }
 }
-
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun AnimeFolderScreen(
     folder: AnimeFolder,
     allItems: List<AnimeItem>,
     onBack: () -> Unit,
     onAnimeClick: (AnimeItem) -> Unit,
-    onManageFolder: () -> Unit
+    onManageFolder: () -> Unit,
+    onRenameFolder: () -> Unit,
+    onChangeStatus: () -> Unit,
+    onDeleteFolder: () -> Unit
 ) {
+    var showRenameDialog by rememberSaveable {
+        mutableStateOf(false)
+    }
 
+    var showStatusDialog by rememberSaveable {
+        mutableStateOf(false)
+    }
+
+    var showDeleteDialog by rememberSaveable {
+        mutableStateOf(false)
+    }
+
+    var showManageDialog by rememberSaveable {
+        mutableStateOf(false)
+    }
     val animeList = allItems.filter {
         it.apiId in folder.animeIds
     }
@@ -2416,6 +2444,10 @@ private fun AnimeFolderScreen(
     Scaffold(
 
         topBar = {
+
+            var menuExpanded by remember {
+                mutableStateOf(false)
+            }
 
             TopAppBar(
 
@@ -2425,11 +2457,90 @@ private fun AnimeFolderScreen(
 
                 navigationIcon = {
 
-                    IconButton(onClick = onBack) {
+                    IconButton(
+                        onClick = onBack
+                    ) {
+
                         Icon(
-                            Icons.Default.ArrowBack,
-                            contentDescription = "Volver"
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = null
                         )
+
+                    }
+
+                },
+
+                actions = {
+
+                    Box {
+
+                        IconButton(
+                            onClick = {
+                                menuExpanded = true
+                            }
+                        ) {
+
+                            Icon(
+                                Icons.Default.MoreVert,
+                                contentDescription = "Opciones"
+                            )
+
+                        }
+
+                        DropdownMenu(
+                            expanded = menuExpanded,
+                            onDismissRequest = {
+                                menuExpanded = false
+                            }
+                        ) {
+
+                            DropdownMenu(
+                                expanded = menuExpanded,
+                                onDismissRequest = { menuExpanded = false }
+                            ) {
+
+                                DropdownMenuItem(
+                                    text = { Text("✏️ Cambiar nombre") },
+                                    onClick = {
+                                        menuExpanded = false
+                                        onRenameFolder()
+                                    }
+                                )
+
+                                DropdownMenuItem(
+                                    text = { Text("🏷️ Cambiar estado") },
+                                    onClick = {
+                                        menuExpanded = false
+                                        onChangeStatus()
+                                    }
+                                )
+
+                                DropdownMenuItem(
+                                    text = { Text("📂 Administrar animes") },
+                                    onClick = {
+                                        menuExpanded = false
+                                        onManageFolder()
+                                    }
+                                )
+
+                                HorizontalDivider()
+
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            "🗑️ Eliminar carpeta",
+                                            color = MaterialTheme.colorScheme.error
+                                        )
+                                    },
+                                    onClick = {
+                                        menuExpanded = false
+                                        onDeleteFolder()
+                                    }
+                                )
+                            }
+
+                        }
+
                     }
 
                 }
@@ -2441,23 +2552,63 @@ private fun AnimeFolderScreen(
     ) { padding ->
 
         LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                top = 16.dp,
+                end = 16.dp,
+                bottom = 110.dp
+            ),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
 
             item {
 
-                Text(
-                    "Estado: ${folder.status}",
-                    modifier = Modifier.padding(16.dp),
-                    style = MaterialTheme.typography.titleMedium
-                )
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                    ),
+                    shape = RoundedCornerShape(24.dp)
+                ) {
 
-                Text(
-                    "${animeList.size} animes",
-                    modifier = Modifier.padding(horizontal = 16.dp)
-                )
+                    Row(
+                        Modifier.padding(18.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+
+                        Text(
+                            "📁",
+                            fontSize = 42.sp
+                        )
+
+                        Spacer(Modifier.width(16.dp))
+
+                        Column {
+
+                            Text(
+                                folder.name,
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+
+                            Spacer(Modifier.height(4.dp))
+
+                            Text(
+                                "Estado: ${folder.status}"
+                            )
+
+                            Text(
+                                "${animeList.size} anime${if (animeList.size == 1) "" else "s"}"
+                            )
+
+                        }
+
+                    }
+
+                }
 
                 Spacer(Modifier.height(16.dp))
 
@@ -2496,8 +2647,25 @@ private fun AnimeFolderScreen(
                         Spacer(Modifier.width(14.dp))
 
                         Column(
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(start = 14.dp)
                         ) {
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Spacer(Modifier.width(6.dp))
+
+                                Text(
+                                    anime.title,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+
+                            }
 
                             Text(
                                 text = anime.title,
@@ -2509,53 +2677,58 @@ private fun AnimeFolderScreen(
 
                             Spacer(Modifier.height(6.dp))
 
-                            anime.rating?.let {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
 
-                                Text(
-                                    text = "★ ${"%.1f".format(it)}",
-                                    color = Color(0xFFE59A22),
-                                    fontWeight = FontWeight.Bold
-                                )
+                                anime.rating?.let {
 
-                                Spacer(Modifier.height(6.dp))
-                            }
-
-                            if (anime.genres.isNotEmpty()) {
-
-                                Row(
-                                    modifier = Modifier.horizontalScroll(
-                                        rememberScrollState()
-                                    ),
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-
-                                    anime.genres.forEach {
-
-                                        AnimeGenrePill(it)
-
-                                    }
+                                    Text(
+                                        "★ ${"%.1f".format(it)}",
+                                        color = Color(0xFFE59A22),
+                                        fontWeight = FontWeight.Bold
+                                    )
 
                                 }
+
+                                anime.episodes?.let { episodes ->
+
+                                    if (episodes > 0) {
+
+                                        Spacer(Modifier.width(12.dp))
+
+                                        Text(
+                                            text = "$episodes episodios",
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            fontSize = 13.sp
+                                        )
+                                    }
+                                }
                             }
+
+                            Spacer(Modifier.height(10.dp))
+
+                            FlowRow(
+
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+
+                            ) {
+
+                                anime.genres.forEach {
+
+                                    AnimeGenrePill(it)
+
+                                }
+
+                            }
+
                         }
                     }
                 }
             }
 
-            item {
 
-                Button(
-                    onClick = onManageFolder,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp)
-                ) {
-
-                    Text("Gestionar carpeta")
-
-                }
-
-            }
 
         }
 
@@ -3253,12 +3426,6 @@ private fun AnimeSavedGridCard(
                         .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(5.dp)
                 ) { anime.genres.forEach { AnimeGenrePill(it) } }
-                if (folder != null) TextButton(
-                    { manageFolder = true },
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(top = 6.dp)
-                ) { Text("Gestionar carpeta", fontWeight = FontWeight.Bold) }
                 if (expanded) {
                     HorizontalDivider(
                         Modifier.padding(vertical = 10.dp),
@@ -3385,26 +3552,21 @@ private fun FolderCard(
 
                 AnimeStatusPill(group.folderStatus ?: "Quiero verlo")
 
-                TextButton(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp),
-                    onClick = onManage
-                ) {
-
-                    Text(
-                        "Gestionar carpeta",
-                        fontWeight = FontWeight.Bold
-                    )
-
-                }
-
             }
+
+            Spacer(Modifier.height(6.dp))
+
+            Text(
+                text = "Actualizada hace poco",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
 
         }
 
     }
 }
+
 @Composable
 private fun AnimeGenrePill(text: String) {
     Surface(
@@ -3421,7 +3583,6 @@ private fun AnimeGenrePill(text: String) {
         )
     }
 }
-
 @Composable
 private fun AnimeFolderManagerDialog(
     folder: AnimeFolder,
@@ -3430,89 +3591,167 @@ private fun AnimeFolderManagerDialog(
     onDismiss: () -> Unit,
     onFoldersChange: (List<AnimeFolder>) -> Unit
 ) {
-    var query by rememberSaveable(folder.id) { mutableStateOf("") }
+
+    var query by rememberSaveable(folder.id) {
+        mutableStateOf("")
+    }
+
     val visible = remember(allItems, query) {
         allItems.filter {
-            query.isBlank() || it.title.contains(
-                query,
-                ignoreCase = true
-            )
+            query.isBlank() ||
+                    it.title.contains(query, ignoreCase = true)
         }
     }
 
-    fun updateFolder(nextIds: List<String>) =
-        onFoldersChange(folders.map { if (it.id == folder.id) it.copy(animeIds = nextIds.distinct()) else it })
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = { TextButton(onDismiss) { Text("Listo") } },
-        dismissButton = {
-            TextButton({ onFoldersChange(folders.filterNot { it.id == folder.id }); onDismiss() }) {
-                Text(
-                    "Eliminar carpeta",
-                    color = MaterialTheme.colorScheme.error
-                )
+    fun updateFolder(nextIds: List<String>) {
+        onFoldersChange(
+            folders.map {
+                if (it.id == folder.id)
+                    it.copy(
+                        animeIds = nextIds.distinct(),
+                        lastModified = System.currentTimeMillis()
+                    )
+                else
+                    it
             }
+        )
+    }
+
+    AlertDialog(
+
+        onDismissRequest = onDismiss,
+
+        title = {
+            Text("Administrar animes")
         },
-        title = { Text(folder.name) },
+
+        confirmButton = {
+
+            TextButton(
+                onClick = onDismiss
+            ) {
+                Text("Listo")
+            }
+
+        },
+
         text = {
+
             Column {
+
                 OutlinedTextField(
-                    query,
-                    { query = it },
-                    Modifier.fillMaxWidth(),
-                    placeholder = { Text("Buscar anime guardado") },
-                    leadingIcon = { Text("⌕", fontSize = 20.sp) },
+                    value = query,
+                    onValueChange = {
+                        query = it
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = {
+                        Text("Buscar anime guardado")
+                    },
+                    leadingIcon = {
+                        Text("⌕", fontSize = 20.sp)
+                    },
                     singleLine = true,
                     shape = RoundedCornerShape(16.dp)
                 )
+
+                Spacer(Modifier.height(12.dp))
+
                 Column(
-                    Modifier
+                    modifier = Modifier
                         .heightIn(max = 420.dp)
                         .verticalScroll(rememberScrollState())
-                        .padding(top = 12.dp)
                 ) {
-                    if (visible.isEmpty()) Text(
-                        "No hay animes guardados con ese nombre.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 13.sp
-                    )
+
+                    if (visible.isEmpty()) {
+
+                        Text(
+                            "No hay animes guardados con ese nombre.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 13.sp
+                        )
+
+                    }
+
                     visible.forEach { anime ->
+
                         val checked = anime.apiId in folder.animeIds
+
                         Row(
-                            Modifier
+                            modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
-                                .clickable { updateFolder(if (checked) folder.animeIds - anime.apiId else folder.animeIds + anime.apiId) }
+                                .clickable {
+
+                                    updateFolder(
+                                        if (checked)
+                                            folder.animeIds - anime.apiId
+                                        else
+                                            folder.animeIds + anime.apiId
+                                    )
+
+                                }
                                 .padding(vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+
                             Checkbox(
-                                checked,
-                                { value -> updateFolder(if (value) folder.animeIds + anime.apiId else folder.animeIds - anime.apiId) })
-                            AnimeArtwork(anime, Modifier.size(width = 34.dp, height = 46.dp))
-                            Column(Modifier
-                                .weight(1f)
-                                .padding(start = 10.dp)) {
+                                checked = checked,
+                                onCheckedChange = { value ->
+
+                                    updateFolder(
+                                        if (value)
+                                            folder.animeIds + anime.apiId
+                                        else
+                                            folder.animeIds - anime.apiId
+                                    )
+
+                                }
+                            )
+
+                            AnimeArtwork(
+                                anime = anime,
+                                modifier = Modifier.size(
+                                    width = 34.dp,
+                                    height = 46.dp
+                                )
+                            )
+
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(start = 10.dp)
+                            ) {
+
                                 Text(
-                                    anime.title,
+                                    text = anime.title,
                                     fontWeight = FontWeight.SemiBold,
                                     fontSize = 13.sp,
                                     maxLines = 2,
                                     overflow = TextOverflow.Ellipsis
                                 )
+
                                 Text(
-                                    anime.watchStatus,
+                                    text = anime.watchStatus,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontSize = 11.sp,
                                     modifier = Modifier.padding(top = 2.dp)
                                 )
+
                             }
+
                         }
+
                     }
+
                 }
+
             }
+
         }
+
     )
+
 }
 
 @Composable
