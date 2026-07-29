@@ -2011,21 +2011,6 @@ private fun AnimeScreen(
     var selectedFolder by remember {
         mutableStateOf<AnimeFolder?>(null)
     }
-    var showManageDialog by rememberSaveable {
-        mutableStateOf(false)
-    }
-
-    var showRenameDialog by rememberSaveable {
-        mutableStateOf(false)
-    }
-
-    var showStatusDialog by rememberSaveable {
-        mutableStateOf(false)
-    }
-
-    var showDeleteDialog by rememberSaveable {
-        mutableStateOf(false)
-    }
 
     LaunchedEffect(Unit) { runCatching { AnimeApi.genres() }.onSuccess { genres = it } }
 
@@ -2044,28 +2029,14 @@ private fun AnimeScreen(
             AnimeFolderScreen(
                 folder = folder,
                 allItems = items,
+                folders = folders,
+                onFoldersChange = onFoldersChange,
                 onBack = {
                     selectedFolder = null
                 },
-
                 onAnimeClick = {
                     selectedAnime = it
                 },
-
-
-                onManageFolder = {
-                    showManageDialog = true
-                }
-                ,
-                onRenameFolder = {
-                    showRenameDialog = true
-                },
-                onChangeStatus = {
-                    showStatusDialog = true
-                },
-                onDeleteFolder = {
-                    showDeleteDialog = true
-                }
             )
 
         } ?: run {
@@ -2152,6 +2123,7 @@ private fun AnimeScreen(
             },
             onSelectRelated = { selectedAnime = it }
         )
+
     }
 
     fun runSearch(
@@ -2190,7 +2162,7 @@ private fun AnimeScreen(
             runSearch(requestedQuery, selectedGenre, genreQuery)
         }
     }
-    
+
     LazyVerticalGrid(
         columns = GridCells.Fixed(2),
         modifier = Modifier
@@ -2415,12 +2387,10 @@ private fun AnimeGenreSelector(
 private fun AnimeFolderScreen(
     folder: AnimeFolder,
     allItems: List<AnimeItem>,
+    folders: List<AnimeFolder>,
+    onFoldersChange: (List<AnimeFolder>) -> Unit,
     onBack: () -> Unit,
-    onAnimeClick: (AnimeItem) -> Unit,
-    onManageFolder: () -> Unit,
-    onRenameFolder: () -> Unit,
-    onChangeStatus: () -> Unit,
-    onDeleteFolder: () -> Unit
+    onAnimeClick: (AnimeItem) -> Unit
 ) {
     var showRenameDialog by rememberSaveable {
         mutableStateOf(false)
@@ -2493,17 +2463,11 @@ private fun AnimeFolderScreen(
                                 menuExpanded = false
                             }
                         ) {
-
-                            DropdownMenu(
-                                expanded = menuExpanded,
-                                onDismissRequest = { menuExpanded = false }
-                            ) {
-
                                 DropdownMenuItem(
                                     text = { Text("✏️ Cambiar nombre") },
                                     onClick = {
                                         menuExpanded = false
-                                        onRenameFolder()
+                                        showRenameDialog = true
                                     }
                                 )
 
@@ -2511,7 +2475,7 @@ private fun AnimeFolderScreen(
                                     text = { Text("🏷️ Cambiar estado") },
                                     onClick = {
                                         menuExpanded = false
-                                        onChangeStatus()
+                                        showStatusDialog = true
                                     }
                                 )
 
@@ -2519,7 +2483,7 @@ private fun AnimeFolderScreen(
                                     text = { Text("📂 Administrar animes") },
                                     onClick = {
                                         menuExpanded = false
-                                        onManageFolder()
+                                        showManageDialog = true
                                     }
                                 )
 
@@ -2534,10 +2498,10 @@ private fun AnimeFolderScreen(
                                     },
                                     onClick = {
                                         menuExpanded = false
-                                        onDeleteFolder()
+                                        showDeleteDialog = true
                                     }
                                 )
-                            }
+
 
                         }
 
@@ -2552,12 +2516,15 @@ private fun AnimeFolderScreen(
     ) { padding ->
 
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+            .navigationBarsPadding(),
             contentPadding = PaddingValues(
                 start = 16.dp,
                 top = 16.dp,
                 end = 16.dp,
-                bottom = 110.dp
+                bottom = 24.dp
             ),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -2657,14 +2624,6 @@ private fun AnimeFolderScreen(
                             ) {
                                 Spacer(Modifier.width(6.dp))
 
-                                Text(
-                                    anime.title,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-
                             }
 
                             Text(
@@ -2731,6 +2690,60 @@ private fun AnimeFolderScreen(
 
 
         }
+
+    }
+
+    if (showRenameDialog) {
+
+        RenameFolderDialog(
+            folder = folder,
+            folders = folders,
+            onDismiss = {
+                showRenameDialog = false
+            },
+            onFoldersChange = onFoldersChange
+        )
+
+    }
+
+    if (showStatusDialog) {
+
+        ChangeFolderStatusDialog(
+            folder = folder,
+            folders = folders,
+            onDismiss = {
+                showStatusDialog = false
+            },
+            onFoldersChange = onFoldersChange
+        )
+
+    }
+
+    if (showDeleteDialog) {
+
+        DeleteFolderDialog(
+            folder = folder,
+            folders = folders,
+            onDismiss = {
+                showDeleteDialog = false
+            },
+            onFoldersChange = onFoldersChange,
+            onDeleted = onBack
+        )
+
+    }
+
+    if (showManageDialog) {
+
+        AnimeFolderManagerDialog(
+            folder = folder,
+            allItems = allItems,
+            folders = folders,
+            onDismiss = {
+                showManageDialog = false
+            },
+            onFoldersChange = onFoldersChange
+        )
 
     }
 
@@ -2967,6 +2980,7 @@ private fun AnimeLibraryOverview(
                     OutlinedTextField(
                         value = folderName,
                         onValueChange = { folderName = it },
+                        modifier = Modifier.fillMaxWidth(),
                         label = { Text("Nombre") },
                         singleLine = true,
                         shape = RoundedCornerShape(16.dp)
@@ -2981,7 +2995,16 @@ private fun AnimeLibraryOverview(
 
                     Spacer(Modifier.height(8.dp))
 
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Estado de la carpeta",
+                        fontWeight = FontWeight.SemiBold
+                    )
+
+                    Spacer(Modifier.height(8.dp))
+
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
 
                         listOf(
                             "Quiero verlo",
@@ -2989,11 +3012,32 @@ private fun AnimeLibraryOverview(
                             "Ya lo vi"
                         ).forEach { status ->
 
-                            FilterChip(
-                                selected = folderStatus == status,
-                                onClick = { folderStatus = status },
-                                label = { Text(status) }
-                            )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .clickable {
+                                        folderStatus = status
+                                    }
+                                    .padding(vertical = 4.dp),
+
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+
+                                RadioButton(
+                                    selected = folderStatus == status,
+                                    onClick = {
+                                        folderStatus = status
+                                    }
+                                )
+
+                                Spacer(Modifier.width(8.dp))
+
+                                Text(
+                                    status,
+                                    fontSize = 15.sp
+                                )
+                            }
                         }
                     }
                 }
@@ -3752,6 +3796,206 @@ private fun AnimeFolderManagerDialog(
 
     )
 
+}
+
+@Composable
+private fun RenameFolderDialog(
+    folder: AnimeFolder,
+    folders: List<AnimeFolder>,
+    onDismiss: () -> Unit,
+    onFoldersChange: (List<AnimeFolder>) -> Unit
+) {
+    var name by rememberSaveable(folder.id) {
+        mutableStateOf(folder.name)
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text("Cambiar nombre")
+        },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = {
+                    name = it
+                },
+                modifier = Modifier.fillMaxWidth(),
+                label = {
+                    Text("Nombre")
+                },
+                singleLine = true
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+
+                    val newName = name.trim()
+
+                    if (newName.isNotEmpty()) {
+
+                        onFoldersChange(
+                            folders.map {
+
+                                if (it.id == folder.id)
+                                    it.copy(
+                                        name = newName,
+                                        lastModified = System.currentTimeMillis()
+                                    )
+                                else
+                                    it
+                            }
+                        )
+
+                    }
+
+                    onDismiss()
+
+                }
+            ) {
+                Text("Guardar")
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss
+            ) {
+                Text("Cancelar")
+            }
+        }
+    )
+}
+
+@Composable
+private fun ChangeFolderStatusDialog(
+    folder: AnimeFolder,
+    folders: List<AnimeFolder>,
+    onDismiss: () -> Unit,
+    onFoldersChange: (List<AnimeFolder>) -> Unit
+) {
+    var selected by rememberSaveable(folder.id) {
+        mutableStateOf(folder.status)
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text("Cambiar estado")
+        },
+        text = {
+            Column {
+                listOf(
+                    "Quiero verlo",
+                    "Viendo",
+                    "Ya lo vi"
+                ).forEach { status ->
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                selected = status
+                            }
+                            .padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+
+                        RadioButton(
+                            selected = selected == status,
+                            onClick = {
+                                selected = status
+                            }
+                        )
+
+                        Spacer(Modifier.width(8.dp))
+
+                        Text(status)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+
+                    onFoldersChange(
+                        folders.map {
+
+                            if (it.id == folder.id)
+                                it.copy(
+                                    status = selected,
+                                    lastModified = System.currentTimeMillis()
+                                )
+                            else
+                                it
+                        }
+                    )
+
+                    onDismiss()
+
+                }
+            ) {
+                Text("Guardar")
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss
+            ) {
+                Text("Cancelar")
+            }
+        }
+    )
+}
+
+@Composable
+private fun DeleteFolderDialog(
+    folder: AnimeFolder,
+    folders: List<AnimeFolder>,
+    onDismiss: () -> Unit,
+    onFoldersChange: (List<AnimeFolder>) -> Unit,
+    onDeleted: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text("Eliminar carpeta")
+        },
+        text = {
+            Text(
+                "¿Seguro que deseas eliminar \"${folder.name}\"?\n\nLos animes NO se eliminarán de tu biblioteca; únicamente desaparecerá la carpeta."
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+
+                    onFoldersChange(
+                        folders.filterNot {
+                            it.id == folder.id
+                        }
+                    )
+
+                    onDeleted()
+
+                    onDismiss()
+                }
+            ) {
+                Text(
+                    "Eliminar",
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss
+            ) {
+                Text("Cancelar")
+            }
+        }
+    )
 }
 
 @Composable
