@@ -78,6 +78,8 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 
+
+
 data class WishItem(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
@@ -140,6 +142,15 @@ data class AnimeLibraryGroup(
     // NUEVO
     val isFolder: Boolean = false,
     val isEmptyFolder: Boolean = false
+)
+
+data class TransactionItem(
+    val id: String = UUID.randomUUID().toString(),
+    val title: String,
+    val description: String,
+    val amount: Double,
+    val isIncome: Boolean, // true para ingreso (+), false para gasto (-)
+    val timestamp: Long = System.currentTimeMillis()
 )
 
 private fun emptyFolderAnime(folder: AnimeFolder): AnimeItem {
@@ -281,6 +292,29 @@ private fun FolderLibraryCard(
 private class PersonalRepository(context: Context) {
     private val wishesPrefs = context.getSharedPreferences("wish_list", Context.MODE_PRIVATE)
     private val prefs = context.getSharedPreferences("personal_hub", Context.MODE_PRIVATE)
+
+    private val budgetPrefs = context.getSharedPreferences("budget_hub", Context.MODE_PRIVATE)
+
+    fun loadTransactions(): List<TransactionItem> = parse("transactions", budgetPrefs) { item ->
+        TransactionItem(
+            item.getString("id"),
+            item.getString("title"),
+            item.optString("description"),
+            item.optDouble("amount"),
+            item.optBoolean("isIncome", false),
+            item.optLong("timestamp", System.currentTimeMillis())
+        )
+    }
+
+    fun saveTransactions(items: List<TransactionItem>) = save("transactions", budgetPrefs, items) { tx ->
+        JSONObject()
+            .put("id", tx.id)
+            .put("title", tx.title)
+            .put("description", tx.description)
+            .put("amount", tx.amount)
+            .put("isIncome", tx.isIncome)
+            .put("timestamp", tx.timestamp)
+    }
 
     fun loadWishes(): List<WishItem> = parse("items", wishesPrefs) { item ->
         WishItem(
@@ -451,12 +485,15 @@ class MainActivity : ComponentActivity() {
 }
 
 private enum class Section(val title: String, val short: String) {
-    WISHES(
-        "Compras",
-        "◇"
-    ),
-    TASKS("Tareas", "✓"), FAVORITES("Favoritos", "♡"), ANIME("Anime", "▷"), SCHEDULE("Horario", "▦")
+    WISHES("Compras", "◇"),
+    TASKS("Tareas", "✓"),
+    FAVORITES("Favoritos", "♡"),
+    ANIME("Anime", "▷"),
+    SCHEDULE("Horario", "▦"),
+    BUDGET("Presupuesto", "$") // <-- Nueva sección
 }
+
+
 
 @Composable
 private fun PersonalHub(repository: PersonalRepository) {
@@ -472,6 +509,7 @@ private fun PersonalHub(repository: PersonalRepository) {
     var editingTask by remember { mutableStateOf<TaskItem?>(null) }
     var editingFavorite by remember { mutableStateOf<FavoriteItem?>(null) }
     var editingSubject by remember { mutableStateOf<SubjectSchedule?>(null) }
+    var transactions by remember { mutableStateOf(repository.loadTransactions()) }
     var formOpen by rememberSaveable { mutableStateOf(false) }
     fun reloadAll() {
         wishes = repository.loadWishes()
@@ -511,6 +549,15 @@ private fun PersonalHub(repository: PersonalRepository) {
             ); formOpen = false
             }
 
+            Section.BUDGET -> TransactionForm(
+                onBack = { formOpen = false },
+                onSave = { value ->
+                    transactions = transactions + value
+                    repository.saveTransactions(transactions)
+                    formOpen = false
+                }
+            )
+
             Section.TASKS -> TaskForm(editingTask, { formOpen = false }) { value ->
                 tasks =
                     if (editingTask == null) tasks + value else tasks.map { if (it.id == value.id) value else it }; repository.saveTasks(
@@ -544,27 +591,15 @@ private fun PersonalHub(repository: PersonalRepository) {
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = { AppNavigation(section) { section = it } },
         floatingActionButton = {
-            if (section in setOf(
-                    Section.WISHES,
-                    Section.TASKS,
-                    Section.FAVORITES,
-                    Section.SCHEDULE
-                )
-            )
+            if (section in setOf(Section.WISHES, Section.TASKS, Section.FAVORITES, Section.SCHEDULE, Section.BUDGET))
                 FloatingActionButton(
                     onClick = {
-                        editingWish = null; editingTask = null; editingFavorite =
-                        null; editingSubject = null; formOpen = true
+                        editingWish = null; editingTask = null; editingFavorite = null; editingSubject = null; formOpen = true
                     },
                     shape = CircleShape,
                     containerColor = MaterialTheme.colorScheme.primary
                 ) {
-                    Text(
-                        "+",
-                        fontSize = 28.sp,
-                        fontWeight = FontWeight.Light,
-                        color = MaterialTheme.colorScheme.onPrimary
-                    )
+                    Text("+", fontSize = 28.sp, fontWeight = FontWeight.Light, color = MaterialTheme.colorScheme.onPrimary)
                 }
         }
     ) { padding ->
@@ -585,6 +620,16 @@ private fun PersonalHub(repository: PersonalRepository) {
                         wishes
                     )
                     })
+
+                Section.BUDGET -> BudgetScreen(
+                    transactions = transactions,
+                    padding = padding,
+                    onAddClick = { formOpen = true },
+                    onDelete = { target ->
+                        transactions = transactions.filterNot { it.id == target.id }
+                        repository.saveTransactions(transactions)
+                    }
+                )
 
                 Section.TASKS -> TasksScreen(
                     tasks,
@@ -668,6 +713,313 @@ private fun PersonalHub(repository: PersonalRepository) {
                         subjects
                     )
                     })
+            }
+        }
+    }
+}
+
+@Composable
+private fun TransactionForm(
+    onBack: () -> Unit,
+    onSave: (TransactionItem) -> Unit
+) {
+    var title by rememberSaveable { mutableStateOf("") }
+    var description by rememberSaveable { mutableStateOf("") }
+    var amountStr by rememberSaveable { mutableStateOf("") }
+    var isIncome by rememberSaveable { mutableStateOf(false) } // Por defecto gasto
+    var error by rememberSaveable { mutableStateOf(false) }
+
+    // Cantidades rápidas sugeridas (como en tu esquema: 10, 100, etc.)
+    val quickAmounts = listOf(10.0, 50.0, 100.0, 500.0, 1000.0)
+
+    FormScaffold(
+        title = "Nueva Transacción",
+        action = "Guardar Transacción",
+        onBack = onBack,
+        onAction = {
+            val amount = amountStr.replace(',', '.').toDoubleOrNull()
+            if (title.isBlank() || amount == null || amount <= 0.0) {
+                error = true
+            } else {
+                onSave(
+                    TransactionItem(
+                        title = title.trim(),
+                        description = description.trim(),
+                        amount = amount,
+                        isIncome = isIncome
+                    )
+                )
+            }
+        }
+    ) {
+        FormIntro("Detalles del movimiento", "Anota si fue un gasto o un ingreso para actualizar tu presupuesto.")
+
+        // Selector de Tipo (+ Ingreso / - Gasto)
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            OutlinedButton(
+                onClick = { isIncome = false },
+                modifier = Modifier.weight(1f).height(50.dp),
+                shape = RoundedCornerShape(15.dp),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    containerColor = if (!isIncome) MaterialTheme.colorScheme.errorContainer else Color.Transparent
+                )
+            ) {
+                Text("Gasto (-)", fontWeight = FontWeight.Bold, color = if (!isIncome) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurface)
+            }
+            OutlinedButton(
+                onClick = { isIncome = true },
+                modifier = Modifier.weight(1f).height(50.dp),
+                shape = RoundedCornerShape(15.dp),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    containerColor = if (isIncome) Color(0xFFE2F4EB) else Color.Transparent
+                )
+            ) {
+                Text("Ingreso (+)", fontWeight = FontWeight.Bold, color = if (isIncome) Color(0xFF287A58) else MaterialTheme.colorScheme.onSurface)
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        AppField(
+            value = title,
+            onChange = { title = it; error = false },
+            label = "Título o Motivo *",
+            error = error
+        )
+
+        AppField(
+            value = amountStr,
+            onChange = { amountStr = it.filter { c -> c.isDigit() || c == '.' || c == ',' }; error = false },
+            label = "Cantidad ($) *",
+            keyboardType = KeyboardType.Decimal,
+            error = error
+        )
+
+        // Accesos rápidos de "Cantidades ya puestas" como indicabas en el boceto
+        Text(
+            "Cantidades sugeridas:",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            quickAmounts.forEach { quickVal ->
+                FilterChip(
+                    selected = amountStr.toDoubleOrNull() == quickVal,
+                    onClick = { amountStr = quickVal.toString() },
+                    label = { Text("$quickVal") },
+                    shape = RoundedCornerShape(12.dp)
+                )
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        AppField(
+            value = description,
+            onChange = { description = it },
+            label = "Descripción (Opcional)",
+            lines = 2
+        )
+    }
+}
+
+@Composable
+private fun BudgetScreen(
+    transactions: List<TransactionItem>,
+    padding: PaddingValues,
+    onAddClick: () -> Unit,
+    onDelete: (TransactionItem) -> Unit
+) {
+    var filterIncome by rememberSaveable { mutableStateOf<Boolean?>(null) } // null = todos, true = ingresos, false = gastos
+
+    val totalIncome = transactions.filter { it.isIncome }.sumOf { it.amount }
+    val totalExpense = transactions.filter { !it.isIncome }.sumOf { it.amount }
+    val balance = totalIncome - totalExpense
+
+    val visibleTransactions = remember(transactions, filterIncome) {
+        when (filterIncome) {
+            true -> transactions.filter { it.isIncome }
+            false -> transactions.filter { !it.isIncome }
+            null -> transactions
+        }
+    }
+
+    LazyColumn(
+        Modifier
+            .fillMaxSize()
+            .padding(padding),
+        contentPadding = PaddingValues(20.dp, 24.dp, 20.dp, 112.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        item {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "CONTROL FINANCIERO",
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.2.sp
+                    )
+                    Text(
+                        "Presupuesto",
+                        style = MaterialTheme.typography.headlineLarge,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+                Button(
+                    onClick = onAddClick,
+                    shape = RoundedCornerShape(18.dp)
+                ) {
+                    Text("+ Transacción", fontWeight = FontWeight.Bold)
+                }
+            }
+            Spacer(Modifier.height(20.dp))
+
+            // Tarjeta de Balance Total principal
+            Card(
+                shape = RoundedCornerShape(26.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(Modifier.padding(22.dp)) {
+                    Text(
+                        "Balance Total",
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        formatPrice(balance),
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text("Ingresos", fontSize = 11.sp, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f))
+                            Text("+ ${formatPrice(totalIncome)}", fontWeight = FontWeight.Bold, color = Color(0xFF287A58))
+                        }
+                        Column {
+                            Text("Gastos", fontSize = 11.sp, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f))
+                            Text("- ${formatPrice(totalExpense)}", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            // Filtros rápidos y Total Gastado resumido como indicabas en el diagrama
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(
+                    selected = filterIncome == null,
+                    onClick = { filterIncome = null },
+                    label = { Text("Todos") },
+                    shape = RoundedCornerShape(14.dp)
+                )
+                FilterChip(
+                    selected = filterIncome == true,
+                    onClick = { filterIncome = true },
+                    label = { Text("Ingresos (+)") },
+                    shape = RoundedCornerShape(14.dp)
+                )
+                FilterChip(
+                    selected = filterIncome == false,
+                    onClick = { filterIncome = false },
+                    label = { Text("Gastos (-)") },
+                    shape = RoundedCornerShape(14.dp)
+                )
+            }
+        }
+
+        if (visibleTransactions.isEmpty()) {
+            item {
+                EmptyState(
+                    "$",
+                    "Sin transacciones",
+                    "Registra ingresos o gastos usando el botón superior."
+                )
+            }
+        }
+
+        items(visibleTransactions.sortedByDescending { it.timestamp }, key = { it.id }) { tx ->
+            ElegantCard(onClick = {}) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        Modifier
+                            .size(46.dp)
+                            .clip(RoundedCornerShape(15.dp))
+                            .background(if (tx.isIncome) Color(0xFFE2F4EB) else MaterialTheme.colorScheme.errorContainer),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            if (tx.isIncome) "+" else "-",
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (tx.isIncome) Color(0xFF287A58) else MaterialTheme.colorScheme.onErrorContainer
+                        )
+                    }
+
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .padding(horizontal = 14.dp)
+                    ) {
+                        Text(
+                            tx.title,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (tx.description.isNotBlank()) {
+                            Text(
+                                tx.description,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                fontSize = 13.sp,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                        }
+                    }
+
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(
+                            text = "${if (tx.isIncome) "+" else "-"} ${formatPrice(tx.amount)}",
+                            fontWeight = FontWeight.Bold,
+                            color = if (tx.isIncome) Color(0xFF287A58) else MaterialTheme.colorScheme.error,
+                            fontSize = 15.sp
+                        )
+                        IconButton(
+                            onClick = { onDelete(tx) },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Text("×", fontSize = 20.sp, color = MaterialTheme.colorScheme.outline)
+                        }
+                    }
+                }
             }
         }
     }
